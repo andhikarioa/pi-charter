@@ -13,6 +13,13 @@ observable > vague wishes
 
 Unknown fields are refused, not ignored: the schema is closed.
 
+**Do not source-hunt to author.** Do not inspect validator/resolver internals merely to author a
+normal `TaskContract` when the required contract fields and boundaries are already defined here. If a
+required field cannot be established truthfully, leave it unresolved and fail closed — do not go
+looking for a convenient value. Never source-hunt to invent `authority` id, `model`, `fallback`,
+capability snapshot, accepted finding, or `execution_target`. Escalate per the ladder in `SKILL.md`
+only on a real evidence gap.
+
 ## Fields and what they mean for the operator
 
 | Field | Values / shape | Operator note |

@@ -10,6 +10,13 @@ pi-charter v0.1 is a pure TypeScript library exported through `pi-charter` (`src
 no CLI, no `/charter` command, no Pi extension, and no runtime tool. Callers invoke pure compiler
 functions to validate, resolve, bind, and compile governance artifacts.
 
+> **Operator note — read economy.** The examples in this reference are verified against the bundled
+> v0.1 public API. Ordinary use should not re-read core implementation files before every invocation:
+> establish the call path here and call it. Inspect `src/index.ts` only when verifying the installed
+> version's public surface, or when an evidenced mismatch must be resolved. This is a read-economy
+> rule, not an authority inversion — the current shipped implementation remains the higher authority
+> over this reference.
+
 ---
 
 ## Minimal explicit setup

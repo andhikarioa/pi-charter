@@ -122,15 +122,77 @@ RESEARCH: explicit permission only
 If authority is insufficient for the work: **STOP** and say so. Do not widen the search merely
 because more context would be convenient.
 
-## Progressive disclosure
+## Reference-first read discipline
+
+For ordinary Charter use — authoring a contract, interpreting a result, explaining a boundary — the
+path is:
+
+```text
+SKILL.md
+     ↓
+minimum relevant reference(s)
+     ↓
+construct / interpret / guide
+     ↓
+STOP
+```
+
+1. Read this `SKILL.md`.
+2. Read only the reference(s) matching the current need.
+3. Use those references to author or interpret the Charter artifact.
+4. **STOP when the task can be answered truthfully.** Sufficient evidence is a stop condition.
+
+Do not inspect core source merely to reconfirm facts this companion already answers.
+
+### Source escalation ladder
+
+```text
+LEVEL 0   SKILL.md
+LEVEL 1   the relevant companion reference(s)
+LEVEL 2   src/index.ts — only when the installed public API identity/signature must be verified
+LEVEL 3   one exact defining core file — only when a specific contradiction remains unresolved
+STOP
+```
+
+Escalate only on an actual evidence gap:
+
+```text
+a required fact is absent from the references
+two companion references materially contradict each other
+runtime/package truth contradicts the references
+the user explicitly asks for source-level verification or audit
+```
+
+Convenience is not a reason. Curiosity is not a reason. Wanting extra confidence is not a reason.
+
+Not part of ordinary adoption: repository-wide `find`/`grep`, canonical-spec archaeology, or reading
+all contract/resolver/enforcement modules "to be safe".
+
+Discouraged when a companion reference already provides sufficient truth:
+
+```text
+"I'll read the implementation to be safe."
+"I'll inspect all related files."
+"I'll grep the spec for confirmation."
+"I'll check how this works internally."
+```
+
+**Precedence is unchanged.** References are the default operational interface; core is the higher
+authority. When they genuinely conflict, core wins and the reference is corrected — but the conflict
+must be evidenced, never assumed.
+
+## Progressive disclosure — need → reference
 
 | Need | Read |
 |------|------|
 | Invoke the TypeScript library correctly | `references/library-usage.md` |
 | Construct a TaskContract | `references/contract-authoring.md` |
 | Choose/understand role or target | `references/roles-and-targets.md` |
-| Interpret refusal / escalation | `references/refusals-and-next-actions.md` |
+| Interpret refusal / next action | `references/refusals-and-next-actions.md` |
 | See complete bounded examples | `references/worked-examples.md` |
+
+If the reference already answers the question, **do not continue into `src/**`** — the escalation
+ladder above governs.
 
 ## Do not duplicate core policy
 
