@@ -288,6 +288,8 @@ Charter itself does **not**:
 - manage locks, leases, or worker pools;
 - track task progress or handle retries.
 
+Hard enforcement depends on the selected target's actual capability snapshot. `parent` and `subagents` are execution targets, not permanent capability guarantees.
+
 ### Review Independence
 
 Review independence is bounded by target capability truth:
@@ -300,9 +302,9 @@ Review independence is bounded by target capability truth:
 | :--- | :--- | :--- |
 | **Bounded implementation** | `implement` / `parent` | Exact `scope.files`, `code_write: true`, non-independent review. |
 | **Independent review** | `review` / `subagents` | Read-only permissions, requires `fresh_session` and `independent_review` capabilities. |
-| **Named correction** | `correct` / `parent` | Requires explicit `authority.sources` identifying accepted review findings. |
+| **Named correction** | `correct` / `parent` | `correct` may modify only named accepted correction targets in `scope.blockers`; bound authority sources ground those targets but are not themselves findings. |
 | **Semantic adjudication** | `adjudicate` / `parent` | Solves one semantic or contract conflict; routes to `reasoning` tier. |
-| **Enforcement refusal** | Any | Contract requiring hard tool ceiling fails on `parent` with `UNSUPPORTED_BY_EXECUTION_TARGET`. |
+| **Enforcement refusal** | Any | Contract requiring hard enforcement unsupported by the target's capability snapshot fails with `UNSUPPORTED_BY_EXECUTION_TARGET`. |
 
 ---
 
@@ -325,6 +327,8 @@ The companion skill provides operator and agent adoption guidance:
 - How to author valid `TaskContract` specifications.
 - How to interpret compiler refusals and structured error codes.
 - How to consume compiled `RoleEnvelope` instructions.
+
+The skill is reference-first: use the minimum relevant bundled reference and stop when it is sufficient; drop into core source only for an evidenced gap or explicit API/source verification. Shipped implementation remains the higher authority.
 
 > **Key Rule**: The skill does not broaden what core permits. Core Charter remains the sole deterministic governance authority.
 
