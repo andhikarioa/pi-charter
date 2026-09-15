@@ -12,8 +12,9 @@ import {
   type Scope,
   type StructuredAction,
   type TaskContract,
+  type TaskDescriptor,
 } from '../contracts/task-contract.ts';
-import { ROLE_JURISDICTION_DEFAULTS } from '../jurisdiction/jurisdiction.ts';
+import { ROLE_JURISDICTION_DEFAULTS, resolveJurisdiction, type AuthorityLevel } from '../jurisdiction/jurisdiction.ts';
 import { routeModelTier, type ModelProfile, type ModelTier } from '../routing/model-routing.ts';
 import { POSITIVE_CONTRACTS, ROOT } from '../validation/fixtures.ts';
 import { validateTaskContract } from '../validation/validate.ts';
@@ -75,10 +76,15 @@ function requiresImplementationAuthority(role: Role): boolean {
  * A Phase-1-valid probe contract for one role at exactly the given permissions, or `undefined`
  * when that combination is already refused by Phase 1.
  */
-function probeContract(role: Role, permissions: Permissions, actions: StructuredAction[] = []): TaskContract | undefined {
+function probeContract(
+  role: Role,
+  permissions: Permissions,
+  actions: StructuredAction[] = [],
+  task: TaskDescriptor = { id: `probe-${role}`, class: 'T1', risk: 'low' },
+): TaskContract | undefined {
   const candidate: TaskContract = {
     version: 'charter/v0.1',
-    task: { id: `probe-${role}`, class: 'T1', risk: 'low' },
+    task,
     role,
     execution_target: 'parent',
     root: ROOT,
@@ -141,6 +147,11 @@ function assertNeverBroadens(out: ExecutionContract, declared: TaskContract, lab
     `${label}: implementation authority does not track the narrowed write permission`,
   );
   assert.equal(
+    out.jurisdiction.semantic_adjudication,
+    declared.role === 'adjudicate' ? 'bounded' : 'none',
+    `${label}: semantic adjudication authority does not follow the role`,
+  );
+  assert.equal(
     out.jurisdiction.mutation.repository,
     out.permissions.code_write ? 'write' : 'none',
     `${label}: repository mutation posture does not track the narrowed write permission`,
@@ -170,7 +181,7 @@ function deepFreeze<T>(value: T): T {
 
 // ── Routing ─────────────────────────────────────────────────────────────────
 
-test('routing — role/task-class/risk resolves to a tier, with promotion only', () => {
+test('C1 — routing is role-only: task class and risk never change the tier', () => {
   const base: Record<Role, ModelTier> = {
     planner: 'workhorse',
     implement: 'workhorse',
@@ -181,15 +192,78 @@ test('routing — role/task-class/risk resolves to a tier, with promotion only',
   for (const role of ROLES) {
     for (const taskClass of TASK_CLASSES) {
       for (const risk of RISKS) {
-        const elevated = taskClass === 'T3' || taskClass === 'T4' || risk === 'critical';
-        const expected: ModelTier = base[role] === 'workhorse' && elevated ? 'reviewer' : base[role];
-        assert.equal(routeModelTier(role, taskClass, risk), expected, `${role} ${taskClass} ${risk}`);
+        assert.equal(routeModelTier(role, taskClass, risk), base[role], `${role} ${taskClass} ${risk}`);
       }
     }
   }
-  // A routine review never demotes to workhorse; adjudicate always keeps the reasoning tier.
+  // Frozen v0.1 routing regression (C1): no T3/T4/critical promotion, no risk-routing table.
+  assert.equal(routeModelTier('implement', 'T0', 'low'), 'workhorse');
+  assert.equal(routeModelTier('implement', 'T3', 'critical'), 'workhorse');
+  assert.equal(routeModelTier('correct', 'T4', 'critical'), 'workhorse');
   assert.equal(routeModelTier('review', 'T0', 'low'), 'reviewer');
+  assert.equal(routeModelTier('review', 'T4', 'critical'), 'reviewer');
+  assert.equal(routeModelTier('adjudicate', 'T0', 'low'), 'reasoning');
   assert.equal(routeModelTier('adjudicate', 'T4', 'critical'), 'reasoning');
+});
+
+// ── C2 — semantic adjudication jurisdiction ─────────────────────────────────
+
+test('C2 — adjudicate holds bounded semantic adjudication, every other role holds none', () => {
+  for (const role of ROLES) {
+    const expected: AuthorityLevel = role === 'adjudicate' ? 'bounded' : 'none';
+    // No permission combination can raise it, and none can lower it for adjudicate either.
+    for (const code_write of [false, true]) {
+      for (const research of [false, true]) {
+        for (const external_write of [false, true]) {
+          for (const release of [false, true]) {
+            const label = `${role} ${JSON.stringify({ code_write, research, external_write, release })}`;
+            assert.equal(
+              resolveJurisdiction(role, { code_write, research, external_write, release }).semantic_adjudication,
+              expected,
+              label,
+            );
+          }
+        }
+      }
+    }
+    assert.equal(ROLE_JURISDICTION_DEFAULTS[role].semantic_adjudication, expected, role);
+  }
+});
+
+test('C2 — task class, risk, and the selected model cannot grant semantic adjudication', () => {
+  for (const role of ROLES) {
+    const expected: AuthorityLevel = role === 'adjudicate' ? 'bounded' : 'none';
+    let baseline: ExecutionContract | undefined;
+    for (const taskClass of TASK_CLASSES) {
+      for (const risk of RISKS) {
+        const candidate = probeContract(
+          role,
+          {
+            code_write: requiresImplementationAuthority(role),
+            research: true,
+            external_write: false,
+            release: false,
+          },
+          [],
+          { id: `c2-${role}`, class: taskClass, risk, evidence: ['probe-evidence'] },
+        );
+        assert.ok(candidate, `no valid probe for role=${role} class=${taskClass} risk=${risk}`);
+        const out = resolved(candidate);
+        const label = `${role} ${taskClass} ${risk}`;
+        assert.equal(out.jurisdiction.semantic_adjudication, expected, label);
+        // Changing class/risk (and therefore nothing else either) cannot move any other axis.
+        assert.deepEqual(out.jurisdiction.product_semantics, 'none', label);
+        assert.deepEqual(out.jurisdiction.architecture, 'none', label);
+        assert.equal(
+          out.jurisdiction.mutation.repository,
+          out.permissions.code_write ? 'write' : 'none',
+          label,
+        );
+        if (baseline === undefined) baseline = out;
+        else assert.deepEqual(out, baseline, label);
+      }
+    }
+  }
 });
 
 // ── E1 — model availability and explicit fallback ───────────────────────────
@@ -260,9 +334,30 @@ test('E1 — no substitution, guessing, or promotion outside the admitted profil
   assert.deepEqual(errorCodes(resolve(contract, { available: 'gpt-5.6-sol' as unknown as string[] })), ['ROUTING_UNRESOLVED']);
 });
 
+// ── C3 — closed TierModels entries ──────────────────────────────────────────
+
+test('C3 — a tier entry admits exactly preferred and fallback; any other key is ROUTING_UNRESOLVED', () => {
+  const contract = fixtureContract('read-only review');
+  for (const key of ['policy', 'fallback_mode', 'allow_any']) {
+    const entry = { preferred: 'gpt-5.6-sol', fallback: [], [key]: 'auto' };
+    // The offending tier is refused on its own account...
+    assert.deepEqual(errorCodes(resolve(contract, withProfile({ ...PROFILE, reviewer: entry }))), ['ROUTING_UNRESOLVED'], key);
+    // ...and a closed profile refuses it even when a different tier is the one being resolved.
+    assert.deepEqual(errorCodes(resolve(contract, withProfile({ ...PROFILE, workhorse: entry }))), ['ROUTING_UNRESOLVED'], key);
+  }
+  const result = resolve(contract, withProfile({ ...PROFILE, reviewer: { preferred: 'p', fallback: [], policy: 'x' } }));
+  assert.ok(!result.ok, 'an unknown tier-entry key must not resolve');
+  assert.deepEqual(result.errors.map((e) => e.path), ['model.profile.reviewer.policy']);
+  // The two admitted keys still resolve, including an empty fallback list.
+  const model = resolved(contract).model;
+  assert.equal(model.tier, 'reviewer');
+  assert.equal(model.preferred, 'gpt-5.6-sol');
+  assert.equal(model.fallback_used, false);
+});
+
 // ── I5 — task class is routing input, not authority ─────────────────────────
 
-test('I5 — task class and risk change the model tier only', () => {
+test('I5 — task class and risk change nothing in the resolved contract', () => {
   const base = fixtureContract('subagents implement with independent review');
   const escalated: TaskContract = {
     ...structuredClone(base),
@@ -270,12 +365,11 @@ test('I5 — task class and risk change the model tier only', () => {
   };
   const low = resolved(base);
   const high = resolved(escalated);
+  // No promotion: the role alone selects the tier (C1), so only the task id moves.
   assert.equal(low.model.tier, 'workhorse');
-  assert.equal(high.model.tier, 'reviewer');
-  assert.deepEqual(high.permissions, low.permissions);
-  assert.deepEqual(high.scope, low.scope);
-  assert.deepEqual(high.authority, low.authority);
-  assert.deepEqual(high.jurisdiction, low.jurisdiction);
+  assert.equal(high.model.tier, 'workhorse');
+  assert.equal(high.task_id, 'escalated-implementation');
+  assert.deepEqual({ ...high, task_id: low.task_id }, low);
 });
 
 // ── E8 — monotonic narrowing ────────────────────────────────────────────────
@@ -485,6 +579,7 @@ test('Phase 2 surface — no execution-target capability or enforcement semantic
     'research',
     'scope',
     'search_space',
+    'semantic_adjudication',
   ]);
   assert.deepEqual(Object.keys(out.jurisdiction.mutation).sort(), ['external', 'release', 'repository']);
   for (const forbidden of ['enforcement', 'capabilities', 'ENFORCED', 'INSTRUCTED', 'UNSUPPORTED', 'resolved_by']) {

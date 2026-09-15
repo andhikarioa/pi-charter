@@ -93,6 +93,11 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
       verification: { level: task.verification.level },
       limits: structuredClone(task.limits ?? {}),
       non_goals: [...(task.non_goals ?? [])],
+      // Provenance only: declared requirements cross into the resolved artifact verbatim, so the
+      // binding step reads them from the contract itself rather than a separate caller channel.
+      // Nothing here reinterprets, narrows, or broadens them, and a contract without requirements
+      // resolves without requirements (§24, §16).
+      ...(task.requirements ? { requirements: structuredClone(task.requirements) } : {}),
       terminal_state: { ...TERMINAL_POLICY },
     },
   };

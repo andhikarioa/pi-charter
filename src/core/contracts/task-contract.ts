@@ -18,7 +18,9 @@ export type Risk = (typeof RISKS)[number];
 export const VERIFICATION_LEVELS = ['V0', 'V1', 'V2', 'V3', 'V4', 'V5'] as const;
 export type VerificationLevel = (typeof VERIFICATION_LEVELS)[number];
 
-export type ExecutionTargetName = 'parent' | 'subagents';
+/** Canonical execution targets (spec §25, §41 Phase 3). Exactly two for v0.1. */
+export const EXECUTION_TARGETS = ['parent', 'subagents'] as const;
+export type ExecutionTargetName = (typeof EXECUTION_TARGETS)[number];
 
 export interface Permissions {
   code_write: boolean;
@@ -83,6 +85,37 @@ export const ACTION_REQUIRES_PERMISSION: Record<StructuredAction, keyof Permissi
   deploy: 'release',
 };
 
+/**
+ * Constraints a task may require the selected execution target to HARD-ENFORCE (spec §23, §24).
+ * Closed vocabulary: exactly these five named constraints exist in v0.1.
+ */
+export const ENFORCEMENT_CONSTRAINTS = [
+  'model_selection',
+  'allowed_tools',
+  'allowed_files',
+  'archaeology_off',
+  'release_forbidden',
+] as const;
+export type EnforcementConstraint = (typeof ENFORCEMENT_CONSTRAINTS)[number];
+
+/**
+ * The only admitted requirement value (spec §24). No optional/preferred/soft hierarchy, no scoring,
+ * no policy language: a constraint is either explicitly `required`, or it is not listed at all.
+ */
+export const ENFORCEMENT_REQUIREMENTS = ['required'] as const;
+export type EnforcementRequirement = (typeof ENFORCEMENT_REQUIREMENTS)[number];
+
+/** The constraints this task requires the target to enforce, each exactly `required`. */
+export type EnforcementRequirements = Partial<Record<EnforcementConstraint, EnforcementRequirement>>;
+
+/**
+ * Task-level requirements (spec §24). Additive Phase 3 shape: a contract without `requirements`
+ * behaves exactly as it did before this field existed.
+ */
+export interface TaskRequirements {
+  enforcement?: EnforcementRequirements;
+}
+
 export interface TaskContract {
   version: 'charter/v0.1';
   task: TaskDescriptor;
@@ -97,6 +130,7 @@ export interface TaskContract {
   limits?: Limits;
   actions?: StructuredAction[];
   non_goals?: string[];
+  requirements?: TaskRequirements;
 }
 
 /**

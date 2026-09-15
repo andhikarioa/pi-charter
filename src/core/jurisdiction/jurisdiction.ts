@@ -27,6 +27,12 @@ export interface Jurisdiction {
   product_semantics: AuthorityLevel;
   architecture: AuthorityLevel;
   implementation: AuthorityLevel;
+  /**
+   * Bounded authority to decide one named contradiction (spec §7.5). Held by `adjudicate` alone.
+   * It is decision authority only: it grants no scope entry, no permission, no repository mutation,
+   * no architecture authority, and no product semantics, and no other field can raise it.
+   */
+  semantic_adjudication: AuthorityLevel;
   search_space: 'bounded';
   archaeology: boolean;
   research: boolean;
@@ -40,6 +46,9 @@ export interface Jurisdiction {
  * No v0.1 TaskContract field grants product semantics or architecture authority, so both resolve to
  * `none` for every role — including adjudicate (spec §7.5): premium reasoning never becomes
  * architecture ownership.
+ *
+ * Semantic adjudication is a separate axis: it is the one authority `adjudicate` holds, bounded to
+ * the named contradiction, and it stays `none` for every other role.
  */
 export const ROLE_JURISDICTION_DEFAULTS: Record<
   Role,
@@ -47,29 +56,50 @@ export const ROLE_JURISDICTION_DEFAULTS: Record<
     product_semantics: AuthorityLevel;
     architecture: AuthorityLevel;
     implementation: AuthorityLevel;
+    semantic_adjudication: AuthorityLevel;
     repository_mutation: 'none' | 'task-controlled';
   }
 > = {
   // §7.1 — produces contracts, not mutations; decomposition authority stays bounded.
-  planner: { product_semantics: 'none', architecture: 'none', implementation: 'none', repository_mutation: 'none' },
+  planner: {
+    product_semantics: 'none',
+    architecture: 'none',
+    implementation: 'none',
+    semantic_adjudication: 'none',
+    repository_mutation: 'none',
+  },
   // §7.2 — bounded implementation; repository mutation is TaskContract-controlled.
   implement: {
     product_semantics: 'none',
     architecture: 'none',
     implementation: 'bounded',
+    semantic_adjudication: 'none',
     repository_mutation: 'task-controlled',
   },
   // §7.3 — read-only; finding authority stays bounded to the reviewed scope.
-  review: { product_semantics: 'none', architecture: 'none', implementation: 'none', repository_mutation: 'none' },
+  review: {
+    product_semantics: 'none',
+    architecture: 'none',
+    implementation: 'none',
+    semantic_adjudication: 'none',
+    repository_mutation: 'none',
+  },
   // §7.4 — bounded implementation restricted to accepted findings.
   correct: {
     product_semantics: 'none',
     architecture: 'none',
     implementation: 'bounded',
+    semantic_adjudication: 'none',
     repository_mutation: 'task-controlled',
   },
-  // §7.5 — read-only; semantic authority stays bounded to the named contradiction.
-  adjudicate: { product_semantics: 'none', architecture: 'none', implementation: 'none', repository_mutation: 'none' },
+  // §7.5 — read-only; the one role with bounded semantic adjudication, and nothing else.
+  adjudicate: {
+    product_semantics: 'none',
+    architecture: 'none',
+    implementation: 'none',
+    semantic_adjudication: 'bounded',
+    repository_mutation: 'none',
+  },
 };
 
 /**
@@ -88,6 +118,8 @@ export function resolveJurisdiction(role: Role, permissions: Permissions): Juris
     architecture: defaults.architecture,
     // Implementation authority requires BOTH the role default and the narrowed write permission.
     implementation: defaults.implementation === 'bounded' && canWrite ? 'bounded' : 'none',
+    // Role default only: no permission, task class, risk, or model can grant or raise it.
+    semantic_adjudication: defaults.semantic_adjudication,
     search_space: 'bounded',
     archaeology: false, // v0.1 admits no archaeology grant; the default stays off (spec §34)
     research: permissions.research,

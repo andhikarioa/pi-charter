@@ -4,6 +4,8 @@ import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import {
   ACTION_REQUIRES_PERMISSION,
+  ENFORCEMENT_CONSTRAINTS,
+  ENFORCEMENT_REQUIREMENTS,
   ROLES,
   RISKS,
   ROLE_REPOSITORY_WRITES,
@@ -13,6 +15,7 @@ import {
   type Limits,
   type Scope,
   type TaskContract,
+  type TaskRequirements,
 } from '../contracts/task-contract.ts';
 
 export interface ValidationEnv {
@@ -42,6 +45,7 @@ const TASK_CONTRACT_KEYS = [
   'limits',
   'actions',
   'non_goals',
+  'requirements',
 ] as const;
 const TASK_KEYS = ['id', 'class', 'risk', 'evidence'] as const;
 const AUTHORITY_KEYS = ['sources'] as const;
@@ -51,6 +55,7 @@ const ACCEPTANCE_KEYS = ['commands', 'assertions', 'review'] as const;
 const ACCEPTANCE_REVIEW_KEYS = ['required', 'independence', 'executor'] as const;
 const VERIFICATION_KEYS = ['level'] as const;
 const LIMITS_KEYS = ['correction_rounds', 'semantic_escalations'] as const;
+const REQUIREMENTS_KEYS = ['enforcement'] as const;
 
 function checkUnknownKeys(
   obj: Record<string, unknown>,
@@ -220,6 +225,36 @@ export function validateTaskContract(input: unknown, env: ValidationEnv = {}): V
 
   if (input.non_goals !== undefined && !isStringList(input.non_goals)) {
     err('INVALID_TASK_CONTRACT', 'non_goals', 'non_goals must be a list of non-empty strings');
+  }
+
+  // ── Required hard enforcement (spec §24, Phase 3 additive shape) ────────────
+  // Closed like every other governance-bearing object: unknown requirement names, unknown
+  // constraint names, and any value other than 'required' fail closed. A contract without
+  // `requirements` keeps exactly its previous behavior — nothing is defaulted or inferred here.
+  if (input.requirements !== undefined) {
+    if (!isRecord(input.requirements)) {
+      err('INVALID_TASK_CONTRACT', 'requirements', 'requirements must be an object');
+    } else {
+      checkUnknownKeys(input.requirements, REQUIREMENTS_KEYS, 'requirements', err);
+      const enforcement = input.requirements.enforcement;
+      if (enforcement !== undefined) {
+        if (!isRecord(enforcement)) {
+          err('INVALID_TASK_CONTRACT', 'requirements.enforcement', 'requirements.enforcement must be an object');
+        } else {
+          checkUnknownKeys(enforcement, ENFORCEMENT_CONSTRAINTS, 'requirements.enforcement', err);
+          for (const constraint of ENFORCEMENT_CONSTRAINTS) {
+            const value = enforcement[constraint];
+            if (value !== undefined && !isOneOf(value, ENFORCEMENT_REQUIREMENTS)) {
+              err(
+                'INVALID_TASK_CONTRACT',
+                `requirements.enforcement.${constraint}`,
+                `requirements.enforcement.${constraint} must be '${ENFORCEMENT_REQUIREMENTS[0]}'`,
+              );
+            }
+          }
+        }
+      }
+    }
   }
 
   // Structural failures are terminal: semantic checks assume well-shaped fields.
@@ -422,8 +457,15 @@ function normalize(c: TaskContract): TaskContract {
     ...(c.limits ? { limits: { ...c.limits } as Limits } : {}),
     ...(c.actions ? { actions: [...c.actions] } : {}),
     ...(c.non_goals ? { non_goals: [...c.non_goals] } : {}),
+    ...(c.requirements ? { requirements: normalizeRequirements(c.requirements) } : {}),
   };
   return contract;
+}
+
+/** Requirements are copied verbatim: validation has already proven them closed and complete. */
+function normalizeRequirements(requirements: TaskRequirements): TaskRequirements {
+  const enforcement = requirements.enforcement;
+  return enforcement ? { enforcement: { ...enforcement } } : {};
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

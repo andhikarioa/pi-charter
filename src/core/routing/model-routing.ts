@@ -1,5 +1,5 @@
 /**
- * Model tiers, model profiles, explicit fallback policy, and task/risk → tier routing.
+ * Model tiers, model profiles, explicit fallback policy, and role → tier routing.
  * Spec §9 (tiers), §10 (availability and explicit fallback), §29 (model unavailable), §37 (determinism).
  *
  * Charter owns which tier is suitable and which preferred/fallback models a profile admits.
@@ -41,25 +41,21 @@ export type ModelSelectionResult =
   | { ok: false; error: CharterError };
 
 /**
- * Tiers a task class or risk may promote to (spec §8): T3/T4 or critical risk.
- * Explicit and finite — no scoring engine, no learned routing, no auto-promotion.
- */
-function requiresElevatedTier(taskClass: TaskClass, risk: Risk): boolean {
-  return taskClass === 'T3' || taskClass === 'T4' || risk === 'critical';
-}
-
-/**
- * Deterministic role → tier routing (spec §8, §9):
+ * Deterministic role → tier routing (spec §8, §9). Frozen v0.1 routing:
  *
- *   routine planner / implement / correct → workhorse
- *   review                               → reviewer
- *   adjudicate                           → reasoning
+ *   planner / implement / correct → workhorse
+ *   review                       → reviewer
+ *   adjudicate                   → reasoning
  *
- * Task class and risk MAY promote the tier and only upward. They never grant authority (spec §8).
+ * Task class and risk are accepted because they are routing inputs of the contract (spec §8), but
+ * in v0.1 they have no tier-changing effect: no promotion, no demotion, no risk-routing table.
+ * A T4/critical adjudication and a T3/critical correction stay on their role's tier.
+ * They never grant authority either (§8). Only the role selects the tier.
  */
 export function routeModelTier(role: Role, taskClass: TaskClass, risk: Risk): ModelTier {
-  const base: ModelTier = role === 'review' ? 'reviewer' : role === 'adjudicate' ? 'reasoning' : 'workhorse';
-  return base === 'workhorse' && requiresElevatedTier(taskClass, risk) ? 'reviewer' : base;
+  void taskClass;
+  void risk;
+  return role === 'review' ? 'reviewer' : role === 'adjudicate' ? 'reasoning' : 'workhorse';
 }
 
 /**
@@ -92,7 +88,15 @@ export function resolveModel(
   }
   for (const known of MODEL_TIERS) {
     const entry: unknown = profile[known];
-    if (entry !== undefined && !isTierModels(entry)) {
+    if (entry === undefined) continue;
+    const extra = unknownTierEntryKey(entry);
+    if (extra !== undefined) {
+      return routingError(
+        `model.profile.${known}.${extra}`,
+        `model tier '${known}' admits only 'preferred' and 'fallback'`,
+      );
+    }
+    if (!isTierModels(entry)) {
       return routingError(
         `model.profile.${known}`,
         `model tier '${known}' must declare a non-empty preferred model and a fallback list`,
@@ -134,9 +138,21 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/** The only keys a tier entry admits (C3). Anything else is a configuration error, never a knob. */
+const TIER_ENTRY_KEYS = ['preferred', 'fallback'] as const;
+
+/** The first key this entry declares that it is not allowed to declare, if any. */
+function unknownTierEntryKey(entry: unknown): string | undefined {
+  if (!isRecord(entry)) return undefined;
+  return Object.keys(entry).find((key) => !(TIER_ENTRY_KEYS as readonly string[]).includes(key));
+}
+
 function isTierModels(value: unknown): value is TierModels {
   return (
     isRecord(value) &&
+    // Closed entry: bounded explicit key validation, so `policy`/`fallback_mode`/`allow_any` and
+    // any other invented knob fail closed instead of being silently ignored.
+    Object.keys(value).every((key) => (TIER_ENTRY_KEYS as readonly string[]).includes(key)) &&
     isNonEmptyString(value.preferred) &&
     Array.isArray(value.fallback) &&
     value.fallback.every(isNonEmptyString)

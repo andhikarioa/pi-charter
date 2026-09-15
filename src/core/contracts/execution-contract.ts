@@ -1,7 +1,8 @@
 /**
  * ExecutionContract — the resolved, bounded artifact of Phase 2 (spec §35).
  *
- * Phase 2 emits semantic fields only. Enforcement truth, execution-target capability snapshots, and
+ * Phase 2 emits semantic fields plus the declared hard-enforcement requirements carried verbatim
+ * from the validated TaskContract. Enforcement truth, execution-target capability snapshots, and
  * adapters belong to Phase 3 and are deliberately absent here.
  */
 
@@ -14,6 +15,7 @@ import type {
   Permissions,
   Role,
   Scope,
+  TaskRequirements,
   VerificationLevel,
 } from './task-contract.ts';
 
@@ -46,5 +48,11 @@ export interface ExecutionContract {
   verification: { level: VerificationLevel };
   limits: Limits;
   non_goals: string[];
+  /**
+   * Hard enforcement requirements declared by the validated TaskContract, carried verbatim (spec
+   * §24). Resolution neither reinterprets, narrows, nor broadens them; target binding reads them
+   * from here and accepts no second, caller-supplied requirements channel.
+   */
+  requirements?: TaskRequirements;
   terminal_state: TerminalPolicy;
 }
