@@ -1,0 +1,19 @@
+{
+  "name": "pi-charter",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Deterministic, fail-closed governance compiler: TaskContract -> ExecutionContract (v0.1, Phase 1)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test \"src/**/*.test.ts\"",
+    "verify": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@types/node": "^26.5.1",
+    "typescript": "^5.9.3"
+  }
+}
