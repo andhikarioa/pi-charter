@@ -6,12 +6,14 @@ import { createAuthorityBinder } from '../../core/authority/binder.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { TaskContract } from '../../core/contracts/task-contract.ts';
 import { resolveExecutionContract, type ResolverEnv } from '../../core/resolver/resolve.ts';
-import { POSITIVE_CONTRACTS } from '../../core/validation/fixtures.ts';
-import type { ExecutionTargetCapabilitySnapshot } from '../../core/enforcement/target-binding.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER, POSITIVE_CONTRACTS } from '../../core/validation/fixtures.ts';
+import type { CapabilityClaim } from '../../core/enforcement/target-binding.ts';
 import { bindParentTarget } from './parent-adapter.ts';
 
 const ENV: ResolverEnv = {
   authorityBinder: createAuthorityBinder({ 'canonical-master': {}, 'reviewer-findings': {} }),
+  assertionBinder: ASSERTION_BINDER,
+  correctionBinder: CORRECTION_BINDER,
   profile: {
     workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
     reviewer: { preferred: 'gpt-5.6-sol', fallback: [] },
@@ -21,7 +23,7 @@ const ENV: ResolverEnv = {
 };
 
 /** Canonical capability fixture (Phase 3 charter §3), supplied by the environment at runtime. */
-const PARENT_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
+const PARENT_SNAPSHOT: CapabilityClaim = {
   name: 'parent',
   capabilities: {
     model_selection: true,
@@ -29,6 +31,30 @@ const PARENT_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
     tool_ceiling: false,
     file_scope_enforcement: false,
     independent_review: false,
+  },
+};
+
+/** The same axes, ATTESTED by an explicit execution adapter (T2). */
+const PARENT_ATTESTATION = {
+  source_kind: 'execution_adapter' as const,
+  source: 'pi-parent',
+  source_version: '0.1.0',
+  payload: { target: 'parent' as const, capabilities: PARENT_SNAPSHOT.capabilities },
+};
+
+const SUBAGENTS_ATTESTATION = {
+  source_kind: 'execution_adapter' as const,
+  source: 'pi-subagents',
+  source_version: '0.1.0',
+  payload: {
+    target: 'subagents' as const,
+    capabilities: {
+      model_selection: true,
+      fresh_session: true,
+      tool_ceiling: true,
+      file_scope_enforcement: false,
+      independent_review: true,
+    },
   },
 };
 
@@ -52,33 +78,39 @@ function contractRequiring(name: string, requirements: TaskContract['requirement
 
 test('parent adapter — binds a parent contract without any subagents runtime', () => {
   const contract = contractFor('critical correction');
-  const result = bindParentTarget({ execution_contract: contract, capability_snapshot: PARENT_SNAPSHOT });
+  const result = bindParentTarget({ execution_contract: contract, capability_claim: PARENT_SNAPSHOT });
   assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
   if (!result.ok) return;
   assert.equal(result.handoff.target, 'parent');
-  assert.deepEqual(Object.keys(result.handoff).sort(), ['enforcement', 'execution_contract', 'target']);
-  assert.equal(result.handoff.enforcement.model_selection, 'ENFORCED');
-  assert.equal(result.handoff.enforcement.allowed_tools, 'INSTRUCTED');
+  assert.deepEqual(Object.keys(result.handoff).sort(), [
+    'capability_evidence',
+    'enforcement',
+    'execution_contract',
+    'target',
+  ]);
+  // Low-level claim path: nothing is attested, so nothing is hard-enforced, whatever the claim says.
+  assert.equal(result.handoff.capability_evidence.class, 'unattested_claim');
+  assert.equal(result.handoff.enforcement.model_selection, 'UNSUPPORTED');
+  assert.equal(result.handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
   // A handoff is a binding, not a session: it exposes no handle, no step, and no state.
   assert.deepEqual(result.handoff.execution_contract, contract);
   assert.notEqual(result.handoff.execution_contract, contract);
+
+  // The strong path: attested capability, so the parent's real model-selection primitive is ENFORCED.
+  const attested = bindParentTarget({ execution_contract: contract, capability_attestation: PARENT_ATTESTATION });
+  assert.equal(attested.ok, true, JSON.stringify(attested.ok ? [] : attested.errors));
+  if (!attested.ok) return;
+  assert.equal(attested.handoff.capability_evidence.class, 'attested');
+  assert.equal(attested.handoff.enforcement.model_selection, 'ENFORCED');
+  // Still no tool ceiling: this contract declares no tool policy, and the parent cannot enforce one.
+  assert.equal(attested.handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
 });
 
 test('parent adapter — refuses a subagents contract instead of substituting the target', () => {
   const contract = contractFor('subagents implement with independent review');
-  // A snapshot that truthfully describes the subagents target: the core binds it, and it is the
-  // adapter that must refuse rather than serve a target the contract did not select.
-  const subagentsSnapshot: ExecutionTargetCapabilitySnapshot = {
-    name: 'subagents',
-    capabilities: {
-      model_selection: true,
-      fresh_session: true,
-      tool_ceiling: true,
-      file_scope_enforcement: false,
-      independent_review: true,
-    },
-  };
-  const result = bindParentTarget({ execution_contract: contract, capability_snapshot: subagentsSnapshot });
+  // Attested capability that truthfully describes the subagents target: the core binds it, and it is
+  // the adapter that must refuse rather than serve a target the contract did not select.
+  const result = bindParentTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['CONTRACT_CONTRADICTION']);
@@ -90,14 +122,14 @@ test('parent adapter — refuses what the parent target cannot enforce', () => {
   // it only inside the resolved contract and owns no requirements parameter of its own.
   const contract = contractRequiring('critical correction', { enforcement: { allowed_tools: 'required' } });
   assert.equal(contract.requirements?.enforcement?.allowed_tools, 'required');
-  const result = bindParentTarget({ execution_contract: contract, capability_snapshot: PARENT_SNAPSHOT });
+  const result = bindParentTarget({ execution_contract: contract, capability_claim: PARENT_SNAPSHOT });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['UNSUPPORTED_BY_EXECUTION_TARGET']);
   // No adapter-level requirement channel exists: a smuggled one fails closed instead of binding.
   const smuggled = bindParentTarget({
     execution_contract: contract,
-    capability_snapshot: PARENT_SNAPSHOT,
+    capability_claim: PARENT_SNAPSHOT,
     requirements: { enforcement: { model_selection: 'required' } },
   } as unknown as Parameters<typeof bindParentTarget>[0]);
   assert.equal(smuggled.ok, false);

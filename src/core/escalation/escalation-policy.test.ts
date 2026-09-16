@@ -8,10 +8,10 @@ import type { Role, TaskContract } from '../contracts/task-contract.ts';
 import { compileBoundRoleEnvelope, type RoleEnvelope } from '../envelopes/role-envelope.ts';
 import {
   bindExecutionTarget,
-  type ExecutionTargetCapabilitySnapshot,
+  type ExecutionTargetCapabilities,
 } from '../enforcement/target-binding.ts';
 import { resolveExecutionContract, type ResolverEnv } from '../resolver/resolve.ts';
-import { ROOT } from '../validation/fixtures.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER, ROOT } from '../validation/fixtures.ts';
 import {
   EXECUTION_OUTCOMES,
   NEXT_ACTIONS,
@@ -31,6 +31,8 @@ const BINDER = createAuthorityBinder({
 
 const ENV: ResolverEnv = {
   authorityBinder: BINDER,
+  assertionBinder: ASSERTION_BINDER,
+  correctionBinder: CORRECTION_BINDER,
   profile: {
     workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
     reviewer: { preferred: 'gpt-5.6-sol', fallback: [] },
@@ -40,26 +42,20 @@ const ENV: ResolverEnv = {
 };
 
 /** Environment input for these tests only: Charter stores no capability facts (spec §25). */
-const PARENT_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
-  name: 'parent',
-  capabilities: {
-    model_selection: true,
-    fresh_session: false,
-    tool_ceiling: false,
-    file_scope_enforcement: false,
-    independent_review: false,
-  },
+const PARENT_CAPABILITIES: ExecutionTargetCapabilities = {
+  model_selection: true,
+  fresh_session: false,
+  tool_ceiling: false,
+  file_scope_enforcement: false,
+  independent_review: false,
 };
 
-const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
-  name: 'subagents',
-  capabilities: {
-    model_selection: true,
-    fresh_session: true,
-    tool_ceiling: true,
-    file_scope_enforcement: false,
-    independent_review: true,
-  },
+const SUBAGENTS_CAPABILITIES: ExecutionTargetCapabilities = {
+  model_selection: true,
+  fresh_session: true,
+  tool_ceiling: true,
+  file_scope_enforcement: false,
+  independent_review: true,
 };
 
 /** Shape-complete TaskContract with per-test overrides. Test input only — never a Charter default. */
@@ -80,12 +76,21 @@ function task(overrides: Partial<TaskContract> = {}): TaskContract {
 }
 
 /** Resolve → bind target → compile the Phase 4 artifact. The Phase 5 policy reads this artifact. */
-function envelopeFor(contract: TaskContract, snapshot: ExecutionTargetCapabilitySnapshot = PARENT_SNAPSHOT): RoleEnvelope {
+function envelopeFor(
+  contract: TaskContract,
+  capabilities: ExecutionTargetCapabilities = PARENT_CAPABILITIES,
+): RoleEnvelope {
   const resolved = resolveExecutionContract(contract, ENV);
   assert.ok(resolved.ok, 'fixture contract must resolve');
+  // Attested capability: a review that requires independence cannot rest on a raw claim (T2).
   const bound = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_snapshot: snapshot,
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: `pi-${resolved.contract.execution_target}`,
+      source_version: '0.1.0',
+      payload: { target: resolved.contract.execution_target, capabilities },
+    },
   });
   assert.ok(bound.ok, 'fixture contract must bind to its execution target');
   const compiled = compileBoundRoleEnvelope(bound.binding);
@@ -118,7 +123,7 @@ const REVIEW = envelopeFor(
     acceptance: { commands: ['npm test'], review: { required: true, independence: 'independent', executor: 'fresh_session' } },
     limits: LIMITS,
   }),
-  SUBAGENTS_SNAPSHOT,
+  SUBAGENTS_CAPABILITIES,
 );
 /** No declared limits: the fixture that proves an undeclared bound is not an invented bound. */
 const IMPLEMENT_NO_LIMITS = envelopeFor(task());

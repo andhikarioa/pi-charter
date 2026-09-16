@@ -5,13 +5,15 @@ import { test } from 'node:test';
 import { createAuthorityBinder } from '../../core/authority/binder.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { TaskContract } from '../../core/contracts/task-contract.ts';
-import type { ExecutionTargetCapabilitySnapshot } from '../../core/enforcement/target-binding.ts';
+import type { CapabilityClaim } from '../../core/enforcement/target-binding.ts';
 import { resolveExecutionContract, type ResolverEnv } from '../../core/resolver/resolve.ts';
-import { POSITIVE_CONTRACTS } from '../../core/validation/fixtures.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER, POSITIVE_CONTRACTS } from '../../core/validation/fixtures.ts';
 import { bindSubagentsTarget } from './subagents-adapter.ts';
 
 const ENV: ResolverEnv = {
   authorityBinder: createAuthorityBinder({ 'canonical-master': {}, 'reviewer-findings': {} }),
+  assertionBinder: ASSERTION_BINDER,
+  correctionBinder: CORRECTION_BINDER,
   profile: {
     workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
     reviewer: { preferred: 'gpt-5.6-sol', fallback: [] },
@@ -21,7 +23,7 @@ const ENV: ResolverEnv = {
 };
 
 /** Canonical capability fixture (Phase 3 charter §3), supplied by the environment at runtime. */
-const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
+const SUBAGENTS_SNAPSHOT: CapabilityClaim = {
   name: 'subagents',
   capabilities: {
     model_selection: true,
@@ -30,6 +32,14 @@ const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
     file_scope_enforcement: false,
     independent_review: true,
   },
+};
+
+/** The same axes, ATTESTED by the explicit adapter identity that produces them (T2). */
+const SUBAGENTS_ATTESTATION = {
+  source_kind: 'execution_adapter' as const,
+  source: 'pi-subagents',
+  source_version: '0.1.0',
+  payload: { target: 'subagents' as const, capabilities: SUBAGENTS_SNAPSHOT.capabilities },
 };
 
 function contractFor(name: string): ExecutionContract {
@@ -52,7 +62,14 @@ function contractRequiring(name: string, requirements: TaskContract['requirement
 
 test('subagents adapter — translates bound truth into bounded handoff parameters', () => {
   const contract = contractFor('subagents implement with independent review');
-  const result = bindSubagentsTarget({ execution_contract: contract, capability_snapshot: SUBAGENTS_SNAPSHOT });
+  // A review that demands independence can only be bound to ATTESTED capability: a raw claim cannot
+  // satisfy a hard capability requirement (T2).
+  assert.equal(
+    bindSubagentsTarget({ execution_contract: contract, capability_claim: SUBAGENTS_SNAPSHOT }).ok,
+    false,
+    'a raw claim must not satisfy the independent-review requirement',
+  );
+  const result = bindSubagentsTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
   assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
   if (!result.ok) return;
   const handoff = result.handoff;
@@ -62,11 +79,15 @@ test('subagents adapter — translates bound truth into bounded handoff paramete
   assert.equal(handoff.model, contract.model.resolved);
   assert.equal(handoff.model, contract.model.preferred);
   assert.equal(handoff.fresh_session_required, true);
-  assert.equal(handoff.enforcement.allowed_tools, 'ENFORCED');
+  // Attested tool ceiling, but this contract declares no tool policy, so nothing is enforced yet (T3).
+  assert.equal(handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
   assert.equal(handoff.enforcement.allowed_files, 'INSTRUCTED');
+  assert.deepEqual(handoff.allowed_tools, []);
   assert.deepEqual(handoff.execution_contract, contract);
   // No Phase 4 envelope, and no invented tool list: the contract declares no tools.
   assert.deepEqual(Object.keys(handoff).sort(), [
+    'allowed_tools',
+    'capability_evidence',
     'enforcement',
     'execution_contract',
     'fresh_session_required',
@@ -78,7 +99,7 @@ test('subagents adapter — translates bound truth into bounded handoff paramete
 
 test('subagents adapter — a host-independent contract still reports its own truth', () => {
   const contract = contractFor('release action with release explicitly admitted');
-  const result = bindSubagentsTarget({ execution_contract: contract, capability_snapshot: SUBAGENTS_SNAPSHOT });
+  const result = bindSubagentsTarget({ execution_contract: contract, capability_claim: SUBAGENTS_SNAPSHOT });
   assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
   if (!result.ok) return;
   assert.equal(result.handoff.role, 'implement');
@@ -87,12 +108,14 @@ test('subagents adapter — a host-independent contract still reports its own tr
   // Release stays instruction-only: the target defines no hard release primitive.
   assert.equal(result.handoff.enforcement.release_forbidden, 'INSTRUCTED');
   assert.equal(result.handoff.enforcement.allowed_files, 'INSTRUCTED');
+  // A claim is recorded as a claim: this run is not attributed to an attested environment (T2).
+  assert.equal(result.handoff.capability_evidence.class, 'unattested_claim');
 });
 
 test('subagents adapter — refuses a parent contract instead of substituting the target', () => {
   const result = bindSubagentsTarget({
     execution_contract: contractFor('critical correction'),
-    capability_snapshot: SUBAGENTS_SNAPSHOT,
+    capability_claim: SUBAGENTS_SNAPSHOT,
   });
   assert.equal(result.ok, false);
   if (result.ok) return;
@@ -103,12 +126,15 @@ test('subagents adapter — fails closed where the target cannot enforce what is
   const requirementsCases: TaskContract['requirements'][] = [
     { enforcement: { allowed_files: 'required' } },
     { enforcement: { release_forbidden: 'required' } },
+    // A tool ceiling with no declared tool policy has nothing to enforce, however capable the target
+    // is: capability alone is never ENFORCED (T3).
+    { enforcement: { allowed_tools: 'required' } },
   ];
   for (const requirements of requirementsCases) {
     // The requirement travels only inside the resolved contract — resolution carried it there.
     const contract = contractRequiring('subagents implement with independent review', requirements);
     assert.deepEqual(contract.requirements, requirements);
-    const result = bindSubagentsTarget({ execution_contract: contract, capability_snapshot: SUBAGENTS_SNAPSHOT });
+    const result = bindSubagentsTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
     assert.equal(result.ok, false, JSON.stringify(requirements));
     if (result.ok) return;
     assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['UNSUPPORTED_BY_EXECUTION_TARGET']);
@@ -116,7 +142,7 @@ test('subagents adapter — fails closed where the target cannot enforce what is
   // No adapter-level requirement channel exists: a smuggled one fails closed instead of binding.
   const smuggled = bindSubagentsTarget({
     execution_contract: contractFor('subagents implement with independent review'),
-    capability_snapshot: SUBAGENTS_SNAPSHOT,
+    capability_attestation: SUBAGENTS_ATTESTATION,
     requirements: { enforcement: { allowed_tools: 'required' } },
   } as unknown as Parameters<typeof bindSubagentsTarget>[0]);
   assert.equal(smuggled.ok, false);

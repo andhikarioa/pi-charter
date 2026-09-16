@@ -1,11 +1,26 @@
 /**
- * Deterministic TaskContract → ExecutionContract resolution (spec §1, §16, §37, §41 Phase 2).
+ * Deterministic TaskContract → ExecutionContract resolution (spec §1, §16, §37, §41 Phase 2;
+ * v0.1.1 Wave 1 — T1, T4, T6, H2).
  *
  * Pure and deterministic: no clock, no randomness, no historical run state, no model inference.
- * The only environment inputs are the authority binder, the model profile, and the explicit model
- * availability snapshot.
+ * The only environment inputs are the evidence binders, the model profile, and exactly one model
+ * availability evidence channel.
+ *
+ * Everything that becomes resolved truth is RESOLVED EVIDENCE, never caller prose:
+ *
+ *   authority sources   → one authority binding each, with content digest (T1)
+ *   assertions          → exactly one verifier identity each (T4)
+ *   correction targets  → finding provenance + explicit acceptance provenance (T6)
+ *   model availability  → an attested inventory, or an explicitly-classified claim (H2)
+ *
+ * A step that cannot establish its evidence fails closed; nothing is inferred, defaulted, or
+ * repaired. Authority never binds by default, an unbound assertion never becomes acceptance, a
+ * blocker identifier alone never authorizes `correct`, and a model is never selected from an
+ * unspecified inventory.
  */
 
+import { resolveAssertionBindings, type AssertionBinding, type AssertionBinder } from '../acceptance/assertion-binding.ts';
+import type { EnvironmentEvidence } from '../attestation/attestation.ts';
 import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import { TERMINAL_POLICY, type ExecutionContract } from '../contracts/execution-contract.ts';
@@ -15,32 +30,56 @@ import {
   type Role,
   type TaskContract,
 } from '../contracts/task-contract.ts';
+import {
+  resolveCorrectionTargets,
+  type CorrectionAuthorityBinder,
+  type ResolvedCorrectionTarget,
+} from '../correction/correction-authority.ts';
 import { ROLE_JURISDICTION_DEFAULTS, resolveJurisdiction } from '../jurisdiction/jurisdiction.ts';
-import { resolveModel, routeModelTier, type ModelProfile } from '../routing/model-routing.ts';
+import { resolveEvidenceProvenance, type EvidenceProvenance } from '../provenance/evidence.ts';
+import { resolveModel, resolveModelAvailability, routeModelTier, type ModelProfile } from '../routing/model-routing.ts';
 import { validateTaskContract } from '../validation/validate.ts';
 
 /** Resolver environment. Everything here is explicit input; nothing is discovered or inferred. */
 export interface ResolverEnv {
   /** Phase 1 authority-binding interface (spec §13). Required: authority never binds by default. */
   authorityBinder: AuthorityBinder;
+  /**
+   * Resolves every declared assertion to exactly one verifier identity (T4). Required whenever the
+   * contract declares assertions: an assertion with no verifier is not verifier-backed acceptance.
+   */
+  assertionBinder?: AssertionBinder;
+  /** Resolves correction-target finding and explicit acceptance provenance (T6). Required for `correct`. */
+  correctionBinder?: CorrectionAuthorityBinder;
   /** Model identities admitted per tier (spec §9). */
   profile: ModelProfile;
-  /** Current model availability supplied by the execution environment (spec §10). */
-  available: readonly string[];
+  /** Raw availability CLAIM supplied by the environment (spec §10). Recorded as a claim (H2). */
+  available?: readonly string[];
+  /** Attested model inventory from an admitted registry source (H2). Exactly one of these two. */
+  model_availability_attestation?: unknown;
 }
 
 export type ResolutionResult =
   | { ok: true; contract: ExecutionContract }
   | { ok: false; errors: CharterError[] };
 
-const RESOLVER_ENV_KEYS = ['authorityBinder', 'profile', 'available'] as const;
+const RESOLVER_ENV_KEYS = [
+  'authorityBinder',
+  'assertionBinder',
+  'correctionBinder',
+  'profile',
+  'available',
+  'model_availability_attestation',
+] as const;
 
 /**
- * Resolve a contract. Fail-closed: an unvalidated, contradictory, or unstaffable contract never
- * produces an ExecutionContract, and no resolver default can widen the TaskContract (§16).
+ * Resolve a contract. Fail-closed: an unvalidated, contradictory, unstaffable, or unevidenced
+ * contract never produces an ExecutionContract, and no resolver default can widen the TaskContract
+ * (§16).
  *
  * The step order is fixed so results are deterministic: configuration → validation → role
- * contradiction → model selection → resolution.
+ * contradiction → authority provenance → assertion binding → correction authority → model
+ * availability → model selection → resolution.
  */
 export function resolveExecutionContract(input: unknown, env: ResolverEnv): ResolutionResult {
   const configErrors = checkEnv(env);
@@ -67,8 +106,69 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
     };
   }
 
+  // T1 — each declared authority reference resolves to exactly one binding, and the resolved
+  // provenance (binding identity + content digest) is what the resolved artifact commits to. The
+  // reference alone is symbolic and proves nothing about which content was bound.
+  const provenance: EvidenceProvenance[] = [];
+  for (const reference of task.authority.sources) {
+    const resolved = resolveEvidenceProvenance(reference, env.authorityBinder.bind(reference));
+    if (!resolved.ok) {
+      return {
+        ok: false,
+        errors: [
+          {
+            code: 'AUTHORITY_UNRESOLVED',
+            path: 'authority.sources',
+            message: `authority '${reference}' ${resolved.reason}`,
+          },
+        ],
+      };
+    }
+    provenance.push(resolved.provenance);
+  }
+
+  // T4 — a declared assertion is admitted only bound to exactly one verifier identity.
+  const assertions = resolveAssertionBindings(task.acceptance.assertions ?? [], env.assertionBinder);
+  if (!assertions.ok) return { ok: false, errors: assertions.errors };
+  const assertionBindings: AssertionBinding[] = assertions.bindings;
+
+  // T6 — `correct` behaves only on admitted targets: a named target whose finding provenance AND
+  // explicit acceptance provenance both resolve. A blocker identifier is a target, never authority.
+  const blockers = task.scope.blockers ?? [];
+  let correctionTargets: ResolvedCorrectionTarget[] = [];
+  if (task.role === 'correct') {
+    if (blockers.length === 0) {
+      return {
+        ok: false,
+        errors: [
+          {
+            code: 'CONTRACT_CONTRADICTION',
+            path: 'scope.blockers',
+            message:
+              "role 'correct' requires at least one named accepted correction target in scope.blockers; no target is admitted by inference",
+          },
+        ],
+      };
+    }
+    const resolved = resolveCorrectionTargets(blockers, env.correctionBinder);
+    if (!resolved.ok) return { ok: false, errors: resolved.errors };
+    correctionTargets = resolved.targets;
+  }
+
+  // H2 — model availability comes from exactly one evidence channel, and the resolved contract
+  // records which one. An attestation is traceable to an admitted registry source; a raw list is
+  // recorded as a claim, never as attested inventory.
+  const availability = resolveModelAvailability({
+    ...(env.available !== undefined ? { available: env.available } : {}),
+    ...(env.model_availability_attestation !== undefined
+      ? { attestation: env.model_availability_attestation }
+      : {}),
+  });
+  if (!availability.ok) return { ok: false, errors: [availability.error] };
+  const modelAvailability: EnvironmentEvidence = availability.evidence;
+
   const tier = routeModelTier(task.role, task.task.class, task.task.risk);
-  const selection = resolveModel(tier, env.profile, env.available);
+  const selection = resolveModel(tier, env.profile, availability.models);
   if (!selection.ok) return { ok: false, errors: [selection.error] };
 
   const permissions = narrowPermissions(task);
@@ -80,16 +180,22 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
       execution_target: task.execution_target,
       role: task.role,
       model: selection.model,
+      model_availability: modelAvailability,
       jurisdiction: resolveJurisdiction(task.role, permissions),
       // Authority binding was proven by validation in this same resolution step. The resolved set is
       // the declared set — never the binder's wider catalogue, never a guessed neighbour (§13, §16).
-      authority: { bound_sources: [...task.authority.sources] },
+      authority: { bound_sources: [...task.authority.sources], provenance },
       // ponytail: v0.1 role defaults contribute no scope entries, so the declared scope is carried
       // verbatim; there is no code path that adds an entry. Add role scope entries only when a role
       // genuinely narrows scope, and intersect with the declared scope here.
       scope: structuredClone(task.scope),
+      // The single canonical tool policy, carried verbatim: binding reads the ceiling from here and
+      // from nowhere else (T3).
+      ...(task.execution_policy ? { execution_policy: structuredClone(task.execution_policy) } : {}),
       permissions,
       acceptance: structuredClone(task.acceptance),
+      assertion_bindings: assertionBindings,
+      correction_targets: correctionTargets,
       verification: { level: task.verification.level },
       limits: structuredClone(task.limits ?? {}),
       non_goals: [...(task.non_goals ?? [])],
@@ -127,7 +233,8 @@ function narrowPermissions(task: TaskContract): Permissions {
 
 /**
  * Fail closed on resolver configuration Charter does not implement. A key that does not constrain
- * the result must never be silently accepted as if it did (§2, §44).
+ * the result must never be silently accepted as if it did (§2, §44), and a binder that is present
+ * but unusable is refused here rather than discovered mid-resolution.
  */
 function checkEnv(env: ResolverEnv): CharterError[] {
   if (typeof env !== 'object' || env === null || Array.isArray(env)) {
@@ -155,5 +262,35 @@ function checkEnv(env: ResolverEnv): CharterError[] {
       message: 'an authority binder is required to resolve authority',
     });
   }
+  const assertionBinder: unknown = (env as { assertionBinder?: unknown }).assertionBinder;
+  if (assertionBinder !== undefined && !isBinder(assertionBinder)) {
+    errors.push({
+      code: 'INVALID_TASK_CONTRACT',
+      path: 'env.assertionBinder',
+      message: 'env.assertionBinder must be an evidence binder with a bind function',
+    });
+  }
+  const correctionBinder: unknown = (env as { correctionBinder?: unknown }).correctionBinder;
+  if (correctionBinder !== undefined && !isCorrectionBinder(correctionBinder)) {
+    errors.push({
+      code: 'INVALID_TASK_CONTRACT',
+      path: 'env.correctionBinder',
+      message: 'env.correctionBinder must carry both a findings binder and an acceptance binder',
+    });
+  }
   return errors;
+}
+
+function isBinder(value: unknown): boolean {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    typeof (value as { bind?: unknown }).bind === 'function'
+  );
+}
+
+function isCorrectionBinder(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const binder = value as { findings?: unknown; acceptances?: unknown };
+  return isBinder(binder.findings) && isBinder(binder.acceptances);
 }

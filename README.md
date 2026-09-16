@@ -56,7 +56,7 @@ import {
   renderRoleEnvelope,
   type TaskContract,
   type ModelProfile,
-  type ExecutionTargetCapabilitySnapshot,
+  type CapabilityClaim,
 } from 'pi-charter';
 
 // 1. Author a bounded TaskContract
@@ -126,7 +126,10 @@ if (!resolved.ok) {
 }
 
 // 4. Bind target capability truth
-const capabilitySnapshot: ExecutionTargetCapabilitySnapshot = {
+//    `capability_claim` is the low-level CLAIM path: nothing is attested, so nothing is ENFORCED.
+//    Use `capability_attestation` (an envelope traceable to an execution adapter) when hard
+//    enforcement must be real.
+const capabilityClaim: CapabilityClaim = {
   name: 'parent',
   capabilities: {
     model_selection: true,
@@ -139,7 +142,7 @@ const capabilitySnapshot: ExecutionTargetCapabilitySnapshot = {
 
 const binding = bindExecutionTarget({
   execution_contract: resolved.contract,
-  capability_snapshot: capabilitySnapshot,
+  capability_claim: capabilityClaim,
 });
 
 if (!binding.ok) {
@@ -228,19 +231,27 @@ Charter enforces seven core invariants across the compilation pipeline:
 | **Monotonic narrowing** | Resolution may narrow authority; never broaden it. |
 | **Explicit model fallback** | Fallbacks must be declared in the profile; no silent substitution. |
 | **Fail closed** | Contradictory or unsupported work stops. |
-| **Truthful enforcement** | `ENFORCED`, `INSTRUCTED`, and `UNSUPPORTED` stay distinct. |
+| **Truthful enforcement** | `ENFORCED`, `INSTRUCTED`, `UNSUPPORTED`, and `NOT_APPLICABLE` stay distinct. |
+| **Attested or claimed** | Attested environment truth and raw caller claims never share proof vocabulary. |
+| **Resolved evidence** | Authority, assertions, and correction targets carry binding identity plus content digest. |
 | **Execution stays external** | Charter does not spawn/manage/recover workers. |
 | **Bounded escalation** | Charter decides one next action; it does not execute the loop. |
 
 ### Enforcement Truth
 
-Constraints in the target binding map strictly to one of three statuses:
+Constraints in the target binding map strictly to one of four statuses:
 
-- `ENFORCED`: The execution substrate has a real hard primitive (e.g. strict tool ceiling on subagents).
-- `INSTRUCTED`: Charter can instruct the executor, but cannot hard-enforce it.
+- `ENFORCED`: The substrate has a real hard primitive AND the contract declares an applicable policy
+  (exact non-empty `scope.files` for `allowed_files`, `execution_policy.allowed_tools` for
+  `allowed_tools`) AND the capability is ATTESTED, not merely claimed.
+- `INSTRUCTED`: A policy applies, but the target cannot hard-enforce it (or nothing attests it).
 - `UNSUPPORTED`: Selected target cannot satisfy the requirement.
+- `NOT_APPLICABLE`: This contract declares no policy for that dimension, so there is nothing to
+  enforce and nothing to instruct. This is not a softer `ENFORCED`, and it is not "all tools allowed".
 
-> **Critical Rule**: `INSTRUCTED != ENFORCED`. Charter never misrepresents prompt instructions as sandbox enforcement.
+> **Critical Rule**: `INSTRUCTED != ENFORCED`. Charter never misrepresents prompt instructions as
+> sandbox enforcement, never reports `ENFORCED` from a caller-supplied boolean, and never reports
+> `ENFORCED` where a capability exists but no policy says what to enforce.
 
 ### Refusal Behavior
 
@@ -375,14 +386,21 @@ const decision = decideNextAction({
 For audit and verification records, Charter can emit deterministic resolution receipts:
 
 ```ts
-import { createResolutionReceipt } from 'pi-charter';
+import { createEvidenceBinder, createResolutionReceipt } from 'pi-charter';
+
+// Resolves each declared assertion to exactly one verifier identity; an unbound assertion fails closed.
+const assertionBinder = createEvidenceBinder({ 'p7-no-blind-replay': 'go-test:TestP7NoBlindReplay' });
 
 const receipt = createResolutionReceipt({
   task_contract: contract,
   authority_binder: authorityBinder,
+  assertion_binder: assertionBinder, // required when the contract declares assertions
   model_profile: profile,
-  model_availability: available,
-  capability_snapshot: capabilitySnapshot,
+  available: available, // raw availability CLAIM; `model_availability_attestation` is the strong path
+  capability_claim: capabilityClaim,
+  // Identity of the compiler artifact that ran this resolution. Required, and never a restatement of
+  // `contract_version`; a missing or version-shaped value produces no receipt.
+  compiler_identity: 'pi-charter-build:2026-01-01',
   target_binding: binding.binding,
 });
 ```

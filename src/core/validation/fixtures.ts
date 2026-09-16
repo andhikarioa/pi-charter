@@ -1,7 +1,52 @@
+import type { AssertionBinder } from '../acceptance/assertion-binding.ts';
+import type { CorrectionAuthorityBinder } from '../correction/correction-authority.ts';
 import type { CharterErrorCode } from '../contracts/errors.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
+import { createEvidenceBinder } from '../provenance/evidence.ts';
 
 export const ROOT = '/projects/fixture';
+
+/**
+ * Verifier bindings for the assertion IDs the fixtures and tests declare (v0.1.1 T4).
+ *
+ * Every verifier identity is named explicitly: nothing here derives one from an assertion ID, and an
+ * assertion that is not listed stays unbound and fails closed at resolution.
+ */
+export const ASSERTION_BINDER: AssertionBinder = createEvidenceBinder({
+  'blocker-a-eliminated': 'go-test:TestBlockerAEliminated',
+  'no-release-changes': 'check:no-release-changes',
+  'findings-reported': 'review:findings-reported',
+  'work-units-bounded': 'review:work-units-bounded',
+  'lint-clean': 'npm:lint',
+  'decision-frozen': 'adjudication:decision-frozen',
+  'manifest-consistent': 'npm:release-verify',
+  'plan-ready': 'planner:plan-ready',
+  'feature-implemented': 'test:feature-implemented',
+  'finding-applied': 'test:finding-applied',
+  'finding-1-eliminated': 'test:finding-1-eliminated',
+  'probe-observed': 'test:probe-observed',
+  'conflict-resolved': 'test:conflict-resolved',
+});
+
+/**
+ * Finding provenance and explicit acceptance provenance for the correction targets fixtures and
+ * tests declare (v0.1.1 T6). Both links are required: a blocker listed in neither fails closed, and a
+ * blocker identifier alone never authorizes `correct`.
+ */
+export const CORRECTION_BINDER: CorrectionAuthorityBinder = {
+  findings: createEvidenceBinder({
+    'blocker-a': 'review-finding:blocker-a',
+    'finding-1': 'review-finding:finding-1',
+    'finding-2': 'review-finding:finding-2',
+    'finding-applied': 'review-finding:finding-applied',
+  }),
+  acceptances: createEvidenceBinder({
+    'blocker-a': 'owner-acceptance:blocker-a',
+    'finding-1': 'owner-acceptance:finding-1',
+    'finding-2': 'owner-acceptance:finding-2',
+    'finding-applied': 'owner-acceptance:finding-applied',
+  }),
+};
 
 /** Positive fixtures: shape-complete contracts that MUST be accepted. */
 export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
@@ -86,7 +131,7 @@ export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
       execution_target: 'parent',
       root: ROOT,
       authority: { sources: ['canonical-master'] },
-      scope: { files: ['**/*'], allow_unrestricted: true },
+      scope: { blockers: ['blocker-a'], files: ['**/*'], allow_unrestricted: true },
       permissions: { code_write: true, research: false, external_write: false, release: false },
       acceptance: { commands: ['npm run lint'], assertions: ['lint-clean'] },
       verification: { level: 'V2' },

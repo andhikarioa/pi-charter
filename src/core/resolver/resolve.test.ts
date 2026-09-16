@@ -16,7 +16,7 @@ import {
 } from '../contracts/task-contract.ts';
 import { ROLE_JURISDICTION_DEFAULTS, resolveJurisdiction, type AuthorityLevel } from '../jurisdiction/jurisdiction.ts';
 import { routeModelTier, type ModelProfile, type ModelTier } from '../routing/model-routing.ts';
-import { POSITIVE_CONTRACTS, ROOT } from '../validation/fixtures.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER, POSITIVE_CONTRACTS, ROOT } from '../validation/fixtures.ts';
 import { validateTaskContract } from '../validation/validate.ts';
 import { resolveExecutionContract, type ResolutionResult, type ResolverEnv } from './resolve.ts';
 
@@ -44,7 +44,14 @@ const ALL_AVAILABLE = ['gemini-3.8-flash', 'gpt-5.6-sol', 'deepseek-v4.1-flash']
 const PROBE_SCOPE: Scope = { files: ['a.go', 'b.go'], blockers: ['blocker-a'] };
 
 function env(overrides: Partial<ResolverEnv> = {}): ResolverEnv {
-  return { authorityBinder: BINDER, profile: PROFILE, available: ALL_AVAILABLE, ...overrides };
+  return {
+    authorityBinder: BINDER,
+    assertionBinder: ASSERTION_BINDER,
+    correctionBinder: CORRECTION_BINDER,
+    profile: PROFILE,
+    available: ALL_AVAILABLE,
+    ...overrides,
+  };
 }
 
 function resolve(contract: unknown, overrides: Partial<ResolverEnv> = {}): ResolutionResult {
@@ -509,6 +516,7 @@ test('E9 — resolution does not mutate caller inputs', () => {
   const available = deepFreeze([...ALL_AVAILABLE]);
   const result = resolveExecutionContract(fixtureContract('read-only review'), {
     authorityBinder: BINDER,
+    assertionBinder: ASSERTION_BINDER,
     profile,
     available,
   });
@@ -555,11 +563,14 @@ test('Phase 2 surface — no execution-target capability or enforcement semantic
   const out = resolved(fixtureContract('critical correction'));
   assert.deepEqual(Object.keys(out).sort(), [
     'acceptance',
+    'assertion_bindings',
     'authority',
+    'correction_targets',
     'execution_target',
     'jurisdiction',
     'limits',
     'model',
+    'model_availability',
     'non_goals',
     'permissions',
     'role',

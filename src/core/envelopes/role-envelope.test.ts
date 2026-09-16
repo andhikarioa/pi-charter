@@ -17,7 +17,7 @@ import {
   type TargetBindingResult,
 } from '../enforcement/target-binding.ts';
 import { resolveExecutionContract, type ResolverEnv } from '../resolver/resolve.ts';
-import { POSITIVE_CONTRACTS } from '../validation/fixtures.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER, POSITIVE_CONTRACTS } from '../validation/fixtures.ts';
 import {
   ENFORCEMENT_WORDING,
   compileRoleEnvelope,
@@ -35,6 +35,8 @@ const BINDER = createAuthorityBinder({
 
 const ENV: ResolverEnv = {
   authorityBinder: BINDER,
+  assertionBinder: ASSERTION_BINDER,
+  correctionBinder: CORRECTION_BINDER,
   profile: {
     workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
     reviewer: { preferred: 'gpt-5.6-sol', fallback: [] },
@@ -70,12 +72,16 @@ const MIXED: ExecutionTargetCapabilities = {
 /** Every field a compiled envelope may carry. An invented field is a governance-bearing surprise. */
 const ENVELOPE_FIELDS = [
   'acceptance',
+  'assertion_bindings',
   'authority',
+  'capability_evidence',
+  'correction_targets',
   'enforcement_truth',
   'execution_target',
   'jurisdiction',
   'limits',
   'model',
+  'model_availability',
   'non_goals',
   'objective',
   'operating_rules',
@@ -104,10 +110,31 @@ function resolved(contract: TaskContract): ExecutionContract {
   return (result as { ok: true; contract: ExecutionContract }).contract;
 }
 
+/**
+ * Bind on the STRONG path: attested capability traceable to an explicit adapter identity. A raw
+ * claim cannot satisfy a hard capability requirement (T2), so envelope truth is evidenced here.
+ */
 function bindToTarget(contract: ExecutionContract, capabilities: ExecutionTargetCapabilities): TargetBinding {
-  const snapshot = { name: contract.execution_target as ExecutionTargetName, capabilities };
-  const result: TargetBindingResult = bindExecutionTarget({ execution_contract: contract, capability_snapshot: snapshot });
+  const result: TargetBindingResult = bindExecutionTarget({
+    execution_contract: contract,
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: 'pi-target-fixture',
+      source_version: '0.1.0',
+      payload: { target: contract.execution_target as ExecutionTargetName, capabilities },
+    },
+  });
   assert.equal(result.ok, true, `contract must bind: ${JSON.stringify(result)}`);
+  return (result as { ok: true; binding: TargetBinding }).binding;
+}
+
+/** The same binding on the low-level CLAIM path: nothing is attested, so nothing is ENFORCED (T2). */
+function bindToTargetFromClaim(contract: ExecutionContract, capabilities: ExecutionTargetCapabilities): TargetBinding {
+  const result: TargetBindingResult = bindExecutionTarget({
+    execution_contract: contract,
+    capability_claim: { name: contract.execution_target as ExecutionTargetName, capabilities },
+  });
+  assert.equal(result.ok, true, `claim-bound contract must bind: ${JSON.stringify(result)}`);
   return (result as { ok: true; binding: TargetBinding }).binding;
 }
 
@@ -288,10 +315,12 @@ test('P4-D — correct envelope: frozen accepted findings only, never a second r
   assert.equal(envelope.permissions.code_write, true);
 
   const rules = envelope.operating_rules.join('\n');
-  // Two separate sets: the target is WHAT to correct, the bound sources are WHY it is authoritative.
-  assert.match(rules, /the accepted findings are frozen; the accepted correction targets named by this contract are: blocker-a\./);
-  assert.match(rules, /those correction targets are grounded by the bound authority sources \(canonical-master, reviewer-findings\)/);
-  assert.match(rules, /a bound authority source is not itself a correction target/);
+  // Two separate sets: the target is WHAT to correct, the evidence links are WHY it is admitted.
+  assert.match(rules, /the accepted findings are frozen; the admitted correction targets are: blocker-a\./);
+  assert.match(rules, /each target is admitted by two resolved evidence links: blocker-a ← finding review-finding:blocker-a/);
+  assert.match(rules, /accepted by owner-acceptance:blocker-a/);
+  assert.match(rules, /A blocker identifier alone admits nothing/);
+  assert.match(rules, /canonical-master, reviewer-findings/);
   for (const boundary of ["reviewer's jurisdiction", 'invent new findings', 'redesign architecture', 'unrelated technical debt']) {
     assert.ok(
       envelope.prohibitions.some((rule) => rule.includes(boundary)),
@@ -337,12 +366,6 @@ test('P4-F — every envelope value is a copy of resolved truth, never a broaden
   for (const { name } of POSITIVE_CONTRACTS) {
     const contract = resolved(fixtureContract(name));
     const binding = bindToTarget(contract, ALL_TRUE);
-    if (contract.role === 'correct' && (contract.scope.blockers ?? []).length === 0) {
-      // A correction naming no accepted target is refused (R3/R5). Phase 1 still admits the contract;
-      // only the `correct` envelope is refused, which is the intentional phase boundary.
-      assert.deepEqual(codes(compileRoleEnvelope({ target_binding: binding })), ['CONTRACT_CONTRADICTION'], name);
-      continue;
-    }
     const envelope = compiled(binding);
 
     assert.deepEqual(Object.keys(envelope).sort(), ENVELOPE_FIELDS, name);
@@ -361,6 +384,10 @@ test('P4-F — every envelope value is a copy of resolved truth, never a broaden
     assert.deepEqual(envelope.non_goals, contract.non_goals, name);
     assert.deepEqual(envelope.terminal_state, contract.terminal_state, name);
     assert.deepEqual(envelope.enforcement_truth, binding.enforcement, name);
+    assert.deepEqual(envelope.capability_evidence, binding.capability_evidence, name);
+    assert.deepEqual(envelope.model_availability, contract.model_availability, name);
+    assert.deepEqual(envelope.assertion_bindings, contract.assertion_bindings, name);
+    assert.deepEqual(envelope.correction_targets, contract.correction_targets, name);
   }
 });
 
@@ -379,7 +406,10 @@ test('P4-G — enforcement truth is transported faithfully and never upgraded (E
     const binding = bindToTarget(resolved(fixtureContract(name)), capabilities);
     const envelope = compiled(binding);
     const lines = section(renderRoleEnvelope(envelope), 'ENFORCEMENT TRUTH');
-    assert.equal(lines.length, ENFORCEMENT_CONSTRAINTS.length);
+    assert.equal(
+      lines.filter((line) => ENFORCEMENT_CONSTRAINTS.some((constraint) => line.startsWith(`${constraint}: `))).length,
+      ENFORCEMENT_CONSTRAINTS.length,
+    );
 
     for (const constraint of ENFORCEMENT_CONSTRAINTS) {
       const truth: EnforcementTruth = binding.enforcement[constraint];
@@ -402,9 +432,26 @@ test('P4-G — enforcement truth is transported faithfully and never upgraded (E
   assert.equal(parent.enforcement_truth.allowed_files, 'INSTRUCTED');
   containing(section(renderRoleEnvelope(parent), 'ENFORCEMENT TRUTH'), [
     'allowed_files: INSTRUCTED',
-    'Do not access files outside the declared scope',
+    'Do not access files outside the declared file policy',
   ]);
   containing(section(renderRoleEnvelope(parent), 'ENFORCEMENT TRUTH'), ['model_selection: UNSUPPORTED']);
+
+  // T2: the low-level claim path is never attested, so nothing is hard-enforced however capable the
+  // claim says the target is — and the envelope says exactly which evidence class it rests on.
+  const claimed = compiled(bindToTargetFromClaim(resolved(fixtureContract('read-only review')), ALL_TRUE));
+  assert.deepEqual(Object.values(claimed.enforcement_truth).includes('ENFORCED'), false);
+  containing(section(renderRoleEnvelope(claimed), 'ENFORCEMENT TRUTH'), [
+    'capability_evidence: unattested claim',
+    'model_selection: UNSUPPORTED',
+  ]);
+  assert.deepEqual(claimed.assertion_bindings.map((binding) => binding.verifier), ['review:findings-reported']);
+  const claimedText = renderRoleEnvelope(claimed);
+  assert.match(claimedText, /ASSERTION_BOUND, not ASSERTION_VERIFIED/);
+
+  // T3: a policy-bearing dimension with no declared policy is NOT_APPLICABLE, never ENFORCED.
+  containing(section(renderRoleEnvelope(parent), 'ENFORCEMENT TRUTH'), [
+    'policy.allowed_tools: none declared',
+  ]);
 });
 
 // ── P4-H determinism and immutability ──────────────────────────────────────
@@ -551,16 +598,20 @@ test('P4-J — role semantics are target-independent; only target truth differs'
     assert.deepEqual(parentEnvelope[field], subagentsEnvelope[field], `${field} must not differ by target`);
   }
 
-  // Only target facts differ: target identity and enforcement truth.
+  // Only target facts differ: target identity and the enforcement truth an attested target can
+  // actually provide. The tool dimension is policy-blocked for BOTH targets because this contract
+  // declares no tool policy (T3), so the file-scope dimension is the one that differs here.
   assert.notDeepEqual(parentEnvelope.execution_target, subagentsEnvelope.execution_target);
   assert.notDeepEqual(parentEnvelope.enforcement_truth, subagentsEnvelope.enforcement_truth);
+  assert.equal(parentEnvelope.enforcement_truth.allowed_tools, 'NOT_APPLICABLE');
+  assert.equal(subagentsEnvelope.enforcement_truth.allowed_tools, 'NOT_APPLICABLE');
   containing(section(renderRoleEnvelope(parentEnvelope), 'ENFORCEMENT TRUTH'), [
     'allowed_files: INSTRUCTED',
-    'allowed_tools: INSTRUCTED',
+    'allowed_tools: NOT_APPLICABLE',
   ]);
   containing(section(renderRoleEnvelope(subagentsEnvelope), 'ENFORCEMENT TRUTH'), [
     'allowed_files: ENFORCED',
-    'allowed_tools: ENFORCED',
+    'allowed_tools: NOT_APPLICABLE',
   ]);
 });
 
@@ -572,7 +623,7 @@ test('R1 — a named correction target compiles and is rendered as the target', 
   assert.deepEqual(envelope.scope.blockers, ['blocker-a']);
 
   const rules = envelope.operating_rules.join('\n');
-  assert.match(rules, /the accepted correction targets named by this contract are: blocker-a\./);
+  assert.match(rules, /the admitted correction targets are: blocker-a\./);
   const text = renderRoleEnvelope(envelope);
   containing(section(text, 'SCOPE'), ['blockers: blocker-a']);
   containing(section(text, 'OPERATING RULES'), ['blocker-a']);
@@ -588,7 +639,7 @@ test('R2 — multiple named correction targets all render as bounded accepted ta
   assert.equal(envelope.scope.allow_unrestricted, true);
   assert.match(
     envelope.operating_rules.join('\n'),
-    /the accepted correction targets named by this contract are: finding-1, finding-2\./,
+    /the admitted correction targets are: finding-1, finding-2\./,
   );
   containing(section(renderRoleEnvelope(envelope), 'SCOPE'), [
     'blockers: finding-1, finding-2',
@@ -596,44 +647,70 @@ test('R2 — multiple named correction targets all render as bounded accepted ta
   ]);
 });
 
-test('R3 — a correction with no named target fails closed', () => {
+test('R3 — a correction with no named target fails closed at resolution', () => {
   const template = fixtureContract('critical correction');
   const scope = { files: ['internal/example.go', 'internal/example_test.go'] };
-  const anonymous = resolved({ ...structuredClone(template), scope });
-  // Phase 1/2 truth is untouched: the contract itself still resolves.
-  assert.equal(anonymous.scope.blockers, undefined);
-
-  const result = compileRoleEnvelope({ target_binding: bindToTarget(anonymous, ALL_TRUE) });
-  assert.equal(result.ok, false);
-  assert.deepEqual(codes(result), ['CONTRACT_CONTRADICTION']);
-  assert.deepEqual(paths(result), ['target_binding.execution_contract.scope.blockers']);
-  assert.equal('envelope' in result, false);
+  // T6: an anonymous correction has no admitted authority, so it cannot even resolve — there is no
+  // binding to compile, and no envelope can describe targets that do not exist.
+  const anonymous = resolveExecutionContract({ ...structuredClone(template), scope }, ENV);
+  assert.equal(anonymous.ok, false);
+  if (anonymous.ok) return;
+  assert.deepEqual([...new Set(anonymous.errors.map((error) => error.code))], ['CONTRACT_CONTRADICTION']);
+  assert.deepEqual(anonymous.errors.map((error) => error.path), ['scope.blockers']);
 });
 
-test('R4 — an empty correction-target list fails closed', () => {
+test('R4 — an empty correction-target list fails closed at resolution', () => {
   const template = fixtureContract('critical correction');
-  const empty = resolved({ ...structuredClone(template), scope: { ...template.scope, blockers: [] } });
-  assert.deepEqual(empty.scope.blockers, []);
-
-  const result = compileRoleEnvelope({ target_binding: bindToTarget(empty, ALL_TRUE) });
-  assert.equal(result.ok, false);
-  assert.deepEqual(codes(result), ['CONTRACT_CONTRADICTION']);
-  assert.deepEqual(paths(result), ['target_binding.execution_contract.scope.blockers']);
+  const empty = resolveExecutionContract({ ...structuredClone(template), scope: { ...template.scope, blockers: [] } }, ENV);
+  assert.equal(empty.ok, false);
+  if (empty.ok) return;
+  assert.deepEqual([...new Set(empty.errors.map((error) => error.code))], ['CONTRACT_CONTRADICTION']);
 });
 
 test('R5 — a bound authority source alone is not a correction target', () => {
   const template = fixtureContract('critical correction');
-  const sourcesOnly = resolved({
-    ...structuredClone(template),
-    authority: { sources: ['reviewer-findings'] },
-    scope: { files: ['internal/example.go', 'internal/example_test.go'] },
-  });
-  assert.deepEqual(sourcesOnly.authority.bound_sources, ['reviewer-findings']);
+  const sourcesOnly = resolveExecutionContract(
+    {
+      ...structuredClone(template),
+      authority: { sources: ['reviewer-findings'] },
+      scope: { files: ['internal/example.go', 'internal/example_test.go'] },
+    },
+    ENV,
+  );
+  assert.equal(sourcesOnly.ok, false);
+  if (sourcesOnly.ok) return;
+  assert.deepEqual([...new Set(sourcesOnly.errors.map((error) => error.code))], ['CONTRACT_CONTRADICTION']);
+});
 
-  const result = compileRoleEnvelope({ target_binding: bindToTarget(sourcesOnly, ALL_TRUE) });
+test('R5b — a named target with no finding or acceptance provenance is refused', () => {
+  const template = fixtureContract('critical correction');
+  const arbitrary = { ...structuredClone(template), scope: { files: ['internal/example.go'], blockers: ['fix-whatever-i-want'] } };
+  // An arbitrary blocker identifier is not authority: neither evidence link resolves for it, so no
+  // correction target is admitted (T6).
+  const result = resolveExecutionContract(arbitrary, ENV);
   assert.equal(result.ok, false);
-  assert.deepEqual(codes(result), ['CONTRACT_CONTRADICTION']);
-  assert.deepEqual(paths(result), ['target_binding.execution_contract.scope.blockers']);
+  if (result.ok) return;
+  assert.deepEqual([...new Set(result.errors.map((error) => error.code))], ['CONTRACT_CONTRADICTION']);
+  const messages = result.errors.map((error) => error.message).join('\n');
+  assert.match(messages, /has no admitted finding provenance/);
+
+  // Finding provenance without acceptance provenance is refused too: half the chain is not authority.
+  const findingOnly = resolveExecutionContract(
+    { ...structuredClone(template), scope: { files: ['internal/example.go'], blockers: ['blocker-a'] } },
+    { ...ENV, correctionBinder: { findings: CORRECTION_BINDER.findings, acceptances: { bind: () => [] } } },
+  );
+  assert.equal(findingOnly.ok, false);
+  if (findingOnly.ok) return;
+  assert.match(findingOnly.errors.map((error) => error.message).join('\n'), /has no explicit acceptance provenance/);
+
+  // Acceptance provenance without finding provenance is refused as well.
+  const acceptanceOnly = resolveExecutionContract(
+    { ...structuredClone(template), scope: { files: ['internal/example.go'], blockers: ['blocker-a'] } },
+    { ...ENV, correctionBinder: { findings: { bind: () => [] }, acceptances: CORRECTION_BINDER.acceptances } },
+  );
+  assert.equal(acceptanceOnly.ok, false);
+  if (acceptanceOnly.ok) return;
+  assert.match(acceptanceOnly.errors.map((error) => error.message).join('\n'), /has no admitted finding provenance/);
 });
 
 test('R6 — the named-target requirement is scoped to `correct` alone', () => {

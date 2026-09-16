@@ -14,7 +14,7 @@ import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
 import {
   bindExecutionTarget,
-  type ExecutionTargetCapabilitySnapshot,
+  type CapabilityClaim,
   type TargetBinding,
 } from '../enforcement/target-binding.ts';
 import { compileBoundRoleEnvelope, type RoleEnvelope } from '../envelopes/role-envelope.ts';
@@ -27,6 +27,7 @@ import {
   type ResolutionReceipt,
   type ResolutionReceiptInput,
 } from './resolution-receipt.ts';
+import { ASSERTION_BINDER, CORRECTION_BINDER } from '../validation/fixtures.ts';
 
 // ── Fixture (explicit input; never a registry) ──────────────────────────────
 
@@ -43,6 +44,12 @@ const PROFILE: ModelProfile = {
 
 const AVAILABLE: readonly string[] = ['gemini-3.8-flash', 'gpt-5.6-sol'];
 
+/**
+ * The compiler artifact identity this run is attributed to (H1). Wave 2 supplies the deterministic
+ * packaged identity; here it is an explicit, non-version value, and the receipt commits to it.
+ */
+const COMPILER_IDENTITY = 'rcp-fixture-compiler:2026-01-01';
+
 const CONTRACT: TaskContract = {
   version: 'charter/v0.1',
   task: { id: 'rcp-implement', class: 'T1', risk: 'medium' },
@@ -58,7 +65,7 @@ const CONTRACT: TaskContract = {
   non_goals: ['architecture redesign'],
 };
 
-const SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
+const SNAPSHOT: CapabilityClaim = {
   name: 'parent',
   capabilities: {
     model_selection: true,
@@ -76,12 +83,23 @@ interface Run {
 }
 
 /** The real Phase 1–4 chain, each stage reached only by a stage that passed. */
-function runPipeline(task: TaskContract = CONTRACT, profile: ModelProfile = PROFILE, snapshot = SNAPSHOT): Run {
+function runPipeline(
+  task: TaskContract = CONTRACT,
+  profile: ModelProfile = PROFILE,
+  claim: CapabilityClaim = SNAPSHOT,
+  compilerIdentity: string = COMPILER_IDENTITY,
+): Run {
   const validated = validateTaskContract(task, { authorityBinder: BINDER });
   assert.ok(validated.ok, 'fixture must validate');
-  const resolved = resolveExecutionContract(validated.contract, { authorityBinder: BINDER, profile, available: AVAILABLE });
+  const resolved = resolveExecutionContract(validated.contract, {
+    authorityBinder: BINDER,
+    assertionBinder: ASSERTION_BINDER,
+    correctionBinder: CORRECTION_BINDER,
+    profile,
+    available: AVAILABLE,
+  });
   assert.ok(resolved.ok, 'fixture must resolve');
-  const bound = bindExecutionTarget({ execution_contract: resolved.contract, capability_snapshot: snapshot });
+  const bound = bindExecutionTarget({ execution_contract: resolved.contract, capability_claim: claim });
   assert.ok(bound.ok, 'fixture must bind to its execution target');
   const envelope = compileBoundRoleEnvelope(bound.binding);
   assert.ok(envelope.ok, 'fixture must compile a role envelope');
@@ -89,9 +107,12 @@ function runPipeline(task: TaskContract = CONTRACT, profile: ModelProfile = PROF
     input: {
       task_contract: validated.contract,
       authority_binder: BINDER,
+      assertion_binder: ASSERTION_BINDER,
+      correction_binder: CORRECTION_BINDER,
       model_profile: profile,
-      model_availability: AVAILABLE,
-      capability_snapshot: snapshot,
+      available: AVAILABLE,
+      capability_claim: claim,
+      compiler_identity: compilerIdentity,
       target_binding: bound.binding,
     },
     binding: bound.binding,
@@ -114,8 +135,13 @@ function receiptOf(run: Run): ResolutionReceipt {
  * rather than cloned — a binder has no value identity to preserve.
  */
 function cloneInput(input: ResolutionReceiptInput): ResolutionReceiptInput {
-  const { authority_binder, ...rest } = input;
-  return { ...structuredClone(rest), authority_binder };
+  const { authority_binder, assertion_binder, correction_binder, ...rest } = input;
+  return {
+    ...structuredClone(rest),
+    authority_binder,
+    ...(assertion_binder === undefined ? {} : { assertion_binder }),
+    ...(correction_binder === undefined ? {} : { correction_binder }),
+  };
 }
 
 function codes(errors: readonly { code: string }[]): string[] {
@@ -193,22 +219,26 @@ test('RCP-3 a changed admitted model profile moves the profile identity and the 
 
 // ── RCP-4 — capability-snapshot sensitivity ─────────────────────────────────
 
-test('RCP-4 a changed capability snapshot moves the snapshot identity and the receipt identity', () => {
+test('RCP-4 a changed capability claim moves the capability evidence identity and the receipt identity', () => {
   const base = receiptOf(runPipeline());
 
   // `fresh_session` cannot change Phase 3 truth for this contract (no review is required), so the
-  // snapshot identity is isolated: nothing but the capability evidence moves.
+  // evidence identity is isolated: nothing but the claimed capability payload moves.
   const shifted = receiptOf(
-    runPipeline(CONTRACT, PROFILE, {
-      name: 'parent',
-      capabilities: { ...SNAPSHOT.capabilities, fresh_session: true },
-    }),
+    runPipeline(
+      CONTRACT,
+      PROFILE,
+      { name: 'parent', capabilities: { ...SNAPSHOT.capabilities, fresh_session: true } },
+    ),
   );
 
-  assert.notEqual(shifted.execution_target_capability_snapshot_identity, base.execution_target_capability_snapshot_identity);
+  assert.notEqual(shifted.capability_evidence.evidence_identity, base.capability_evidence.evidence_identity);
   assert.equal(shifted.execution_contract_identity, base.execution_contract_identity);
   assert.deepEqual(shifted.enforcement_truth, base.enforcement_truth);
   assert.notEqual(shifted.receipt_identity, base.receipt_identity);
+  // A claim stays a claim: nothing here is attested, so nothing is hard-enforced (T2).
+  assert.equal(shifted.capability_evidence.class, 'unattested_claim');
+  assert.equal(shifted.enforcement_truth.model_selection, 'UNSUPPORTED');
 });
 
 // ── RCP-5 — resolved truth is derived, never overridden ─────────────────────
@@ -260,7 +290,7 @@ test('RCP-5 evidence that describes a different run is refused, never blended', 
   const otherTarget = cloneInput(run.input);
   otherTarget.target_binding.target = 'subagents';
   const otherSnapshot = cloneInput(run.input);
-  otherSnapshot.capability_snapshot.name = 'subagents';
+  (otherSnapshot.capability_claim as CapabilityClaim).name = 'subagents';
 
   for (const bad of [otherTask, otherTarget, otherSnapshot]) {
     const result = createResolutionReceipt(bad);
@@ -270,7 +300,7 @@ test('RCP-5 evidence that describes a different run is refused, never blended', 
 
   // A malformed or incomplete artifact is refused too: the receipt records truth, not a gap.
   assert.equal(createResolutionReceipt({ ...run.input, target_binding: { target: 'parent', execution_contract: {} } }).ok, false);
-  assert.equal(createResolutionReceipt({ ...run.input, model_availability: [42] }).ok, false);
+  assert.equal(createResolutionReceipt({ ...run.input, available: [42] }).ok, false);
 });
 
 // ── RCP-6 — immutability ────────────────────────────────────────────────────
@@ -297,7 +327,7 @@ test('RCP-6 the receipt is immutable and shares no structure with its sources', 
   run.input.task_contract.task.id = 'mutated-after-receipt';
   run.input.task_contract.scope.files?.push('src/mutated.ts');
   run.input.model_profile.workhorse!.preferred = 'mutated-model';
-  run.input.capability_snapshot.capabilities.tool_ceiling = true;
+  (run.input.capability_claim as CapabilityClaim).capabilities.tool_ceiling = true;
   contract.role = 'adjudicate';
   contract.permissions.release = true;
   run.input.target_binding.enforcement.allowed_tools = 'ENFORCED';
@@ -322,11 +352,13 @@ test('RCP-7 the receipt vocabulary is exactly evidence: no lifecycle field exist
   const receipt = receiptOf(runPipeline());
 
   assert.deepEqual(Object.keys(receipt).sort(), [
+    'authority_provenance',
+    'capability_evidence',
+    'compiler_identity',
     'contract_version',
     'enforcement_truth',
     'execution_contract_identity',
-    'execution_target_capability_snapshot_identity',
-    'model_availability_identity',
+    'model_availability_evidence',
     'model_profile_identity',
     'receipt_identity',
     'resolution_result',
@@ -356,6 +388,8 @@ test('RCP-7 the receipt vocabulary is exactly evidence: no lifecycle field exist
   }
 
   assert.equal(receipt.contract_version, 'charter/v0.1');
+  assert.equal(receipt.compiler_identity, COMPILER_IDENTITY);
+  assert.notEqual(receipt.compiler_identity, receipt.contract_version);
   assert.equal(receipt.validation_result, 'VALID');
   assert.equal(receipt.resolution_result, 'RESOLVED');
 });
@@ -408,7 +442,7 @@ const REVIEW_CONTRACT: TaskContract = {
   limits: { semantic_escalations: 1 },
 };
 
-const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
+const SUBAGENTS_SNAPSHOT: CapabilityClaim = {
   name: 'subagents',
   capabilities: {
     model_selection: true,
@@ -419,6 +453,52 @@ const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
   },
 };
 
+/**
+ * The same capabilities, ATTESTED by an explicit evidence source (T2). A contract that requires
+ * independent review cannot be bound on a raw claim, so the strong path is the only one that can
+ * produce this binding at all.
+ */
+const SUBAGENTS_ATTESTATION = {
+  source_kind: 'execution_adapter' as const,
+  source: 'pi-subagents',
+  source_version: '0.1.0',
+  payload: { target: 'subagents' as const, capabilities: SUBAGENTS_SNAPSHOT.capabilities },
+};
+
+/** The attested twin of `runPipeline`: a review contract bound to attested subagents capability. */
+function runAttestedPipeline(): Run {
+  const validated = validateTaskContract(REVIEW_CONTRACT, { authorityBinder: BINDER });
+  assert.ok(validated.ok, 'review fixture must validate');
+  const resolved = resolveExecutionContract(validated.contract, {
+    authorityBinder: BINDER,
+    assertionBinder: ASSERTION_BINDER,
+    profile: PROFILE,
+    available: AVAILABLE,
+  });
+  assert.ok(resolved.ok, 'review fixture must resolve');
+  const bound = bindExecutionTarget({
+    execution_contract: resolved.contract,
+    capability_attestation: SUBAGENTS_ATTESTATION,
+  });
+  assert.ok(bound.ok, 'the attested review fixture must bind');
+  const envelope = compileBoundRoleEnvelope(bound.binding);
+  assert.ok(envelope.ok, 'the attested review fixture must compile an envelope');
+  return {
+    input: {
+      task_contract: validated.contract,
+      authority_binder: BINDER,
+      assertion_binder: ASSERTION_BINDER,
+      model_profile: PROFILE,
+      available: AVAILABLE,
+      capability_attestation: SUBAGENTS_ATTESTATION,
+      compiler_identity: COMPILER_IDENTITY,
+      target_binding: bound.binding,
+    },
+    binding: bound.binding,
+    envelope: envelope.envelope,
+  };
+}
+
 function refusal(input: unknown): string[] {
   const result = createResolutionReceipt(input);
   assert.equal(result.ok, false, 'this evidence must not produce a receipt');
@@ -427,13 +507,13 @@ function refusal(input: unknown): string[] {
 
 test('RCP-9 evidence spliced from two different runs is refused, never blended', () => {
   const parentRun = runPipeline();
-  const subagentsRun = runPipeline(REVIEW_CONTRACT, PROFILE, SUBAGENTS_SNAPSHOT);
+  const subagentsRun = runAttestedPipeline();
 
   const spliced: unknown[] = [
     { ...parentRun.input, target_binding: subagentsRun.input.target_binding },
     { ...subagentsRun.input, target_binding: parentRun.input.target_binding },
     { ...parentRun.input, task_contract: subagentsRun.input.task_contract },
-    { ...parentRun.input, capability_snapshot: subagentsRun.input.capability_snapshot },
+    { ...parentRun.input, capability_attestation: subagentsRun.input.capability_attestation },
     { ...subagentsRun.input, task_contract: parentRun.input.task_contract },
   ];
   for (const attack of spliced) refusal(attack);
@@ -494,15 +574,15 @@ test('RCP-9 a profile or availability set that cannot produce the resolved model
   const run = runPipeline();
 
   // Truthful canonical failure: the tier cannot be staffed at all.
-  assert.deepEqual(refusal({ ...run.input, model_availability: ['gpt-5.6-sol'] }), ['MODEL_UNAVAILABLE']);
-  assert.deepEqual(refusal({ ...run.input, model_availability: [] }), ['MODEL_UNAVAILABLE']);
+  assert.deepEqual(refusal({ ...run.input, available: ['gpt-5.6-sol'] }), ['MODEL_UNAVAILABLE']);
+  assert.deepEqual(refusal({ ...run.input, available: [] }), ['MODEL_UNAVAILABLE']);
   assert.deepEqual(
     refusal({ ...run.input, model_profile: { ...PROFILE, workhorse: { preferred: 'ghost-model', fallback: [] } } }),
     ['MODEL_UNAVAILABLE'],
   );
   // Malformed profile/availability evidence is a routing failure, never a silently skipped input.
   assert.deepEqual(refusal({ ...run.input, model_profile: 'gemini-3.8-flash' }), ['ROUTING_UNRESOLVED']);
-  assert.deepEqual(refusal({ ...run.input, model_availability: [42] }), ['ROUTING_UNRESOLVED']);
+  assert.deepEqual(refusal({ ...run.input, available: [42] }), ['ROUTING_UNRESOLVED']);
   assert.deepEqual(
     refusal({ ...run.input, model_profile: { ...PROFILE, speculative: { preferred: 'x', fallback: [] } } }),
     ['ROUTING_UNRESOLVED'],
@@ -519,19 +599,20 @@ test('RCP-9 a profile or availability set that cannot produce the resolved model
   );
 });
 
-test('RCP-9 a capability snapshot that implies different enforcement truth, or misses an axis, is refused', () => {
+test('RCP-9 a capability claim that contradicts the claimed enforcement evidence is refused', () => {
   const run = runPipeline();
 
-  // The snapshot flips an axis the claimed truth contradicts: no softer report is accepted.
+  // Every flipped axis changes the claimed capability evidence, which the claimed binding does not
+  // carry: a binding that describes different evidence is refused, never blended (T2).
   assert.deepEqual(
-    refusal({ ...run.input, capability_snapshot: { name: 'parent', capabilities: { ...SNAPSHOT.capabilities, tool_ceiling: true } } }),
+    refusal({ ...run.input, capability_claim: { name: 'parent', capabilities: { ...SNAPSHOT.capabilities, tool_ceiling: true } } }),
     ['CONTRACT_CONTRADICTION'],
   );
   assert.deepEqual(
-    refusal({ ...run.input, capability_snapshot: { name: 'parent', capabilities: { ...SNAPSHOT.capabilities, model_selection: false } } }),
+    refusal({ ...run.input, capability_claim: { name: 'parent', capabilities: { ...SNAPSHOT.capabilities, model_selection: false } } }),
     ['CONTRACT_CONTRADICTION'],
   );
-  assert.deepEqual(refusal({ ...run.input, capability_snapshot: { name: 'subagents', capabilities: SUBAGENTS_SNAPSHOT.capabilities } }), [
+  assert.deepEqual(refusal({ ...run.input, capability_claim: { name: 'subagents', capabilities: SUBAGENTS_SNAPSHOT.capabilities } }), [
     'CONTRACT_CONTRADICTION',
   ]);
   // Missing, malformed, or invented axes are Phase 3 configuration failures, reported as such.
@@ -540,9 +621,9 @@ test('RCP-9 a capability snapshot that implies different enforcement truth, or m
     { ...SNAPSHOT.capabilities, tool_ceiling: 'yes' },
     { ...SNAPSHOT.capabilities, sandbox: true },
   ]) {
-    assert.deepEqual(refusal({ ...run.input, capability_snapshot: { name: 'parent', capabilities } }), ['INVALID_TASK_CONTRACT']);
+    assert.deepEqual(refusal({ ...run.input, capability_claim: { name: 'parent', capabilities } }), ['INVALID_TASK_CONTRACT']);
   }
-  assert.deepEqual(refusal({ ...run.input, capability_snapshot: undefined }), ['INVALID_TASK_CONTRACT']);
+  assert.deepEqual(refusal({ ...run.input, capability_claim: undefined }), ['INVALID_TASK_CONTRACT']);
 });
 
 test('RCP-9 a claimed binding that is not the binding this evidence resolves to is refused', () => {
@@ -590,9 +671,12 @@ test('RCP-9 honest evidence still produces exactly one receipt, raw or normalize
   const honest = receiptOfInput({
     task_contract: raw,
     authority_binder: BINDER,
+    assertion_binder: ASSERTION_BINDER,
+    correction_binder: CORRECTION_BINDER,
     model_profile: PROFILE,
-    model_availability: AVAILABLE,
-    capability_snapshot: SNAPSHOT,
+    available: AVAILABLE,
+    capability_claim: SNAPSHOT,
+    compiler_identity: COMPILER_IDENTITY,
     target_binding: run.input.target_binding,
   });
   assert.deepEqual(honest, receiptOf(run));

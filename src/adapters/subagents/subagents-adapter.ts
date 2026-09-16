@@ -10,6 +10,7 @@
  * repository, so this file is the pure Charter-side translation boundary and nothing more.
  */
 
+import type { EnvironmentEvidence } from '../../core/attestation/attestation.ts';
 import type { CharterError } from '../../core/contracts/errors.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { Role } from '../../core/contracts/task-contract.ts';
@@ -24,18 +25,25 @@ import {
  * Bounded handoff parameters for a `subagents` target.
  *
  * Only what the contract already carries is handed over: no role prompt of its own (the Phase 4 core
- * role-envelope compiler renders it from this binding), no tool list (the contract declares none), no
- * lifecycle handle. `execution_contract` is carried as a value.
+ * role-envelope compiler renders it from this binding), no lifecycle handle. `execution_contract` is
+ * carried as a value.
  */
 export interface SubagentsHandoff {
   target: 'subagents';
   role: Role;
   /** The resolved model identity actually selected — never the tier preference, never a substitute. */
   model: string;
+  /**
+   * The bounded allowed tool set this contract declares, or an empty list when it declares no tool
+   * policy (T3). An empty list is the absence of a policy, never "all tools allowed".
+   */
+  allowed_tools: string[];
   /** True when the contract requires review outside the working session (spec §26.1). */
   fresh_session_required: boolean;
   /** Actual enforcement truth for the selected target. Never inferred, never upgraded. */
   enforcement: EnforcementTruthTable;
+  /** How that truth was evidenced: attested environment truth, or an unattested claim (T2). */
+  capability_evidence: EnvironmentEvidence;
   execution_contract: ExecutionContract;
 }
 
@@ -69,8 +77,12 @@ export function bindSubagentsTarget(input: TargetBindingInput): SubagentsBinding
       target: 'subagents',
       role: contract.role,
       model: contract.model.resolved,
+      // The canonical tool policy crosses the boundary as a value: the substrate enforces a ceiling
+      // only when the contract declares one (T3).
+      allowed_tools: [...(contract.execution_policy?.allowed_tools ?? [])],
       fresh_session_required: requiresFreshSession(contract.acceptance?.review),
       enforcement: bound.binding.enforcement,
+      capability_evidence: bound.binding.capability_evidence,
       execution_contract: contract,
     },
   };

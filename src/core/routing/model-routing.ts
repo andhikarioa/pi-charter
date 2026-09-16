@@ -7,6 +7,12 @@
  * promotes, or demotes a model on its own.
  */
 
+import type { EnvironmentEvidence } from '../attestation/attestation.ts';
+import {
+  attestedEvidence,
+  checkAttestationEnvelope,
+  claimedEvidence,
+} from '../attestation/attestation.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { Risk, Role, TaskClass } from '../contracts/task-contract.ts';
 
@@ -39,6 +45,107 @@ export interface ModelSelection {
 export type ModelSelectionResult =
   | { ok: true; model: ModelSelection }
   | { ok: false; error: CharterError };
+
+/** Exact provider/model identities a registry attests it can currently staff (H2). */
+export interface ModelAvailabilityAttestationPayload {
+  models: string[];
+}
+
+const AVAILABILITY_PAYLOAD_KEYS = ['models'] as const;
+
+/**
+ * Resolve model availability from exactly one evidence channel (v0.1.1 H2).
+ *
+ * A raw availability list is a CLAIM: it is accepted, classified as `unattested_claim`, and recorded
+ * as such, so it can never be read later as attested registry truth. An attestation is traceable to
+ * an admitted `model_registry` source and carries a deterministic identity over its canonical
+ * payload. Supplying both channels, neither, or an unrecognized attestation source fails closed.
+ */
+export function resolveModelAvailability(input: {
+  available?: unknown;
+  attestation?: unknown;
+}): { ok: true; models: string[]; evidence: EnvironmentEvidence } | { ok: false; error: CharterError } {
+  const hasClaim = input.available !== undefined;
+  const hasAttestation = input.attestation !== undefined;
+  if (hasClaim && hasAttestation) {
+    return {
+      ok: false,
+      error: {
+        code: 'CONTRACT_CONTRADICTION',
+        path: 'env.model_availability_attestation',
+        message: 'available and model_availability_attestation are both present; exactly one evidence channel is admitted',
+      },
+    };
+  }
+  if (!hasClaim && !hasAttestation) {
+    return {
+      ok: false,
+      error: {
+        code: 'INVALID_TASK_CONTRACT',
+        path: 'env.available',
+        message: 'an explicit availability claim or attestation is required to resolve a model',
+      },
+    };
+  }
+
+  if (hasClaim) {
+    if (!isModelList(input.available)) {
+      return unresolved('model.available', 'the availability claim must be a list of model identities');
+    }
+    // Membership is the meaning here; array order is encoding. The evidence identity is therefore
+    // taken over the canonical (sorted) inventory, so the same set is the same evidence whichever
+    // way the environment happened to list it.
+    const models = [...(input.available as string[])].sort();
+    const evidence = claimedEvidence(models);
+    if (!evidence.ok) {
+      return unresolved('model.available', `the availability claim is not canonicalizable (${evidence.reason})`);
+    }
+    return { ok: true, models, evidence: evidence.evidence };
+  }
+
+  const errors: CharterError[] = [];
+  const envelope = checkAttestationEnvelope(
+    input.attestation,
+    'env.model_availability_attestation',
+    'model_registry',
+    (code, path, message) => { errors.push({ code, message, path }); },
+  );
+  if (envelope === undefined) {
+    // Every refusal path reports; the fallback exists only so no failure is silently lost.
+    const failure: CharterError = errors[0] ?? {
+      code: 'INVALID_TASK_CONTRACT',
+      path: 'env.model_availability_attestation',
+      message: 'the model-availability attestation could not be validated',
+    };
+    return { ok: false, error: failure };
+  }
+  const payload = envelope.payload;
+  if (!isRecord(payload)) {
+    return unresolved('env.model_availability_attestation.payload', 'the attested availability payload must be an object');
+  }
+  for (const key of Object.keys(payload)) {
+    if (!(AVAILABILITY_PAYLOAD_KEYS as readonly string[]).includes(key)) {
+      return unresolved(
+        `env.model_availability_attestation.payload.${key}`,
+        `unknown field 'env.model_availability_attestation.payload.${key}'`,
+      );
+    }
+  }
+  if (!isModelList(payload.models)) {
+    return unresolved(
+      'env.model_availability_attestation.payload.models',
+      'the attested inventory must be a list of exact provider/model identities',
+    );
+  }
+  const evidence = attestedEvidence({ ...envelope, payload: { models: [...(payload.models as string[])].sort() } });
+  if (!evidence.ok) {
+    return unresolved(
+      'env.model_availability_attestation.payload',
+      `the attested inventory is not canonicalizable evidence (${evidence.reason})`,
+    );
+  }
+  return { ok: true, models: [...(payload.models as string[])].sort(), evidence: evidence.evidence };
+}
 
 /**
  * Deterministic role → tier routing (spec §8, §9). Frozen v0.1 routing:
@@ -73,7 +180,7 @@ export function resolveModel(
   profile: ModelProfile,
   available: readonly string[],
 ): ModelSelectionResult {
-  if (!Array.isArray(available) || !available.every(isNonEmptyString)) {
+  if (!isModelList(available)) {
     return routingError('model.available', 'the availability snapshot must be a list of model identities');
   }
   if (!isRecord(profile)) {
@@ -130,12 +237,21 @@ function routingError(path: string, message: string): ModelSelectionResult {
   return { ok: false, error: { code: 'ROUTING_UNRESOLVED', path, message } };
 }
 
+/** Availability-evidence failure: the same canonical routing code, in the evidence result shape. */
+function unresolved(path: string, message: string): { ok: false; error: CharterError } {
+  return { ok: false, error: { code: 'ROUTING_UNRESOLVED', path, message } };
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isModelList(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(isNonEmptyString);
 }
 
 /** The only keys a tier entry admits (C3). Anything else is a configuration error, never a knob. */

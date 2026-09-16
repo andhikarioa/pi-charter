@@ -39,7 +39,7 @@ export interface Scope {
   files?: string[];
   symbols?: string[];
   directories?: string[];
-  /** Named contract sections. */
+  /** Named contract sections. NOT a file-enforcement policy: only exact `files` is (T3). */
   sections?: string[];
   /** Explicit admission of unrestricted scope (spec §14). Absent ⇒ wildcard scope fails closed. */
   allow_unrestricted?: boolean;
@@ -116,6 +116,22 @@ export interface TaskRequirements {
   enforcement?: EnforcementRequirements;
 }
 
+/**
+ * Canonical execution policy (v0.1.1 Wave 1 — T3).
+ *
+ * `ENFORCED` requires an attested capability AND an applicable canonical policy: a target that CAN
+ * enforce a dimension has nothing to enforce unless the contract says exactly what. The policy is
+ * therefore explicit and singular here — there is no second location for the tool ceiling, and a
+ * missing policy never means "everything is allowed".
+ */
+export interface ExecutionPolicy {
+  /**
+   * The exact bounded set of tools this task may use. Absent means the contract declares no tool
+   * policy at all, so no tool ceiling exists to enforce or instruct.
+   */
+  allowed_tools?: string[];
+}
+
 export interface TaskContract {
   version: 'charter/v0.1';
   task: TaskDescriptor;
@@ -131,6 +147,8 @@ export interface TaskContract {
   actions?: StructuredAction[];
   non_goals?: string[];
   requirements?: TaskRequirements;
+  /** The single canonical tool-policy source (T3). Absent means no tool policy exists. */
+  execution_policy?: ExecutionPolicy;
 }
 
 /**

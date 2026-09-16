@@ -46,10 +46,12 @@ const TASK_CONTRACT_KEYS = [
   'actions',
   'non_goals',
   'requirements',
+  'execution_policy',
 ] as const;
 const TASK_KEYS = ['id', 'class', 'risk', 'evidence'] as const;
 const AUTHORITY_KEYS = ['sources'] as const;
 const SCOPE_KEYS = ['blockers', 'files', 'symbols', 'directories', 'sections', 'allow_unrestricted'] as const;
+const EXECUTION_POLICY_KEYS = ['allowed_tools'] as const;
 const PERMISSION_KEYS = ['code_write', 'research', 'external_write', 'release'] as const;
 const ACCEPTANCE_KEYS = ['commands', 'assertions', 'review'] as const;
 const ACCEPTANCE_REVIEW_KEYS = ['required', 'independence', 'executor'] as const;
@@ -257,8 +259,30 @@ export function validateTaskContract(input: unknown, env: ValidationEnv = {}): V
     }
   }
 
+  // ── Canonical execution policy (v0.1.1 T3) ─────────────────────────────────
+  // Closed like every other governance-bearing object. The tool policy is singular: it exists here
+  // or it does not exist at all, and an empty declaration is refused rather than read either as
+  // "no tools allowed" or as "no policy".
+  if (input.execution_policy !== undefined) {
+    if (!isRecord(input.execution_policy)) {
+      err('INVALID_TASK_CONTRACT', 'execution_policy', 'execution_policy must be an object');
+    } else {
+      checkUnknownKeys(input.execution_policy, EXECUTION_POLICY_KEYS, 'execution_policy', err);
+      const allowedTools = input.execution_policy.allowed_tools;
+      if (allowedTools !== undefined && (!isStringList(allowedTools) || allowedTools.length === 0)) {
+        err(
+          'INVALID_TASK_CONTRACT',
+          'execution_policy.allowed_tools',
+          'execution_policy.allowed_tools must name at least one tool; declare it only when a bounded tool set exists',
+        );
+      }
+    }
+  }
+
   // Structural failures are terminal: semantic checks assume well-shaped fields.
   if (errors.length > 0) return { ok: false, errors };
+  // SAFETY: every structural check above passed, so the record is a well-shaped TaskContract; the
+  // cast only restores the type the checks just established.
   const c = input as unknown as TaskContract;
 
   // ── Role / task / permission compatibility (spec §17, §7, §8) ──────────────
@@ -458,6 +482,13 @@ function normalize(c: TaskContract): TaskContract {
     ...(c.actions ? { actions: [...c.actions] } : {}),
     ...(c.non_goals ? { non_goals: [...c.non_goals] } : {}),
     ...(c.requirements ? { requirements: normalizeRequirements(c.requirements) } : {}),
+    ...(c.execution_policy
+      ? {
+          execution_policy: {
+            ...(c.execution_policy.allowed_tools ? { allowed_tools: [...c.execution_policy.allowed_tools] } : {}),
+          },
+        }
+      : {}),
   };
   return contract;
 }

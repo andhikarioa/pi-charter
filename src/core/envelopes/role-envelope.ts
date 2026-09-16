@@ -21,6 +21,11 @@
  * charter forbids a second semantic template per target.
  */
 
+import { ASSERTION_BINDING_TRUTH, type AssertionBinding } from '../acceptance/assertion-binding.ts';
+import {
+  checkEnvironmentEvidence,
+  type EnvironmentEvidence,
+} from '../attestation/attestation.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import type { ExecutionContract, TerminalPolicy } from '../contracts/execution-contract.ts';
 import {
@@ -30,6 +35,7 @@ import {
   type Acceptance,
   type AcceptanceReview,
   type EnforcementConstraint,
+  type ExecutionPolicy,
   type ExecutionTargetName,
   type Limits,
   type Permissions,
@@ -37,6 +43,7 @@ import {
   type Scope,
   type VerificationLevel,
 } from '../contracts/task-contract.ts';
+import { isResolvedCorrectionTarget, type ResolvedCorrectionTarget } from '../correction/correction-authority.ts';
 import {
   ENFORCEMENT_TRUTHS,
   type EnforcementTruth,
@@ -44,6 +51,7 @@ import {
   type TargetBinding,
 } from '../enforcement/target-binding.ts';
 import type { Jurisdiction } from '../jurisdiction/jurisdiction.ts';
+import { isEvidenceProvenance, type EvidenceProvenance } from '../provenance/evidence.ts';
 import type { ModelSelection } from '../routing/model-routing.ts';
 
 // ── Role envelope (Phase 4 charter §2) ──────────────────────────────────────
@@ -64,15 +72,33 @@ export interface RoleEnvelope {
 
   objective: string;
 
-  authority: { bound_sources: string[] };
+  authority: {
+    /** The references the envelope may cite: the already-bound set, never the binder's catalogue. */
+    bound_sources: string[];
+    /** Resolved provenance per reference (T1): the evidence identity the contract actually bound. */
+    provenance: EvidenceProvenance[];
+  };
   scope: Scope;
+  /** The single canonical tool policy of the resolved contract, when one exists (T3). */
+  execution_policy?: ExecutionPolicy;
   jurisdiction: Jurisdiction;
   permissions: Permissions;
 
   /** Phase 3 truth, carried verbatim. Never recomputed, never upgraded. */
   enforcement_truth: EnforcementTruthTable;
+  /** What the enforcement truth rests on: attested environment truth, or an unattested claim (T2). */
+  capability_evidence: EnvironmentEvidence;
+  /** How the resolved model's availability was evidenced (H2). */
+  model_availability: EnvironmentEvidence;
 
   acceptance: Acceptance;
+  /**
+   * Verifier-bound acceptance evidence (T4). The envelope claims `ASSERTION_BOUND` for each of
+   * these and never `ASSERTION_VERIFIED`.
+   */
+  assertion_bindings: AssertionBinding[];
+  /** The admitted correction targets, and only those (T6). Empty for every role but `correct`. */
+  correction_targets: ResolvedCorrectionTarget[];
   verification: { level: VerificationLevel };
   limits: Limits;
   non_goals: string[];
@@ -105,7 +131,7 @@ export type RoleEnvelopeResult =
   | { ok: false; errors: CharterError[] };
 
 const ENVELOPE_INPUT_KEYS = ['target_binding'] as const;
-const BINDING_KEYS = ['target', 'enforcement', 'execution_contract'] as const;
+const BINDING_KEYS = ['target', 'enforcement', 'capability_evidence', 'execution_contract'] as const;
 /**
  * Governance-bearing fields the envelope copies out of the binding. Presence and object-ness are
  * checked so a malformed artifact cannot be rendered as `undefined` truth; contents are copied
@@ -178,6 +204,11 @@ export function compileRoleEnvelope(input: unknown): RoleEnvelopeResult {
     );
   }
   const enforcement = checkEnforcementTable(binding.enforcement, err);
+  const capabilityEvidence = checkEnvironmentEvidence(
+    binding.capability_evidence,
+    'target_binding.capability_evidence',
+    err,
+  );
   for (const key of CARRIED_KEYS) {
     if (!isRecord(contract[key])) {
       err(
@@ -207,25 +238,51 @@ export function compileRoleEnvelope(input: unknown): RoleEnvelopeResult {
   if (typeof contract.task_id !== 'string' || contract.task_id.length === 0) {
     err('INVALID_TASK_CONTRACT', 'target_binding.execution_contract.task_id', 'a resolved contract must carry a task_id');
   }
+  checkAuthorityProvenance(contract.authority, err);
+  const modelAvailability = checkEnvironmentEvidence(
+    contract.model_availability,
+    'target_binding.execution_contract.model_availability',
+    err,
+  );
+  const assertionBindings = checkAssertionBindings(contract.assertion_bindings, err);
+  const correctionTargets = checkCorrectionTargets(contract.correction_targets, err);
+  if (contract.execution_policy !== undefined && !isRecord(contract.execution_policy)) {
+    err(
+      'INVALID_TASK_CONTRACT',
+      'target_binding.execution_contract.execution_policy',
+      'a resolved contract must carry execution_policy as an object when it declares one',
+    );
+  }
   if (errors.length > 0) return { ok: false, errors };
 
   // SAFETY: the shape checks above establish every field the envelope copies. Re-validating a
   // resolved contract is Phase 1/2 work that this phase deliberately does not repeat.
   const src = contract as unknown as ExecutionContract;
-  // Fail closed: a `correct` envelope must name what it corrects. `scope.blockers` is the named
-  // accepted correction target set; the bound authority sources only ground those targets and are
-  // never themselves targets. Without at least one named target the envelope would claim frozen
-  // accepted findings that are not structurally present — a false authority claim. The TaskContract
-  // itself stays Phase 1-valid; it is the `correct` envelope that is refused (charter §7).
-  if (src.role === 'correct' && namedCorrectionTargets(src).length === 0) {
+  // Fail closed on correction authority in both directions (T6): a `correct` envelope must name at
+  // least one admitted target, and no other role carries one. A blocker identifier is a target, and
+  // an admitted target is the only thing that authorizes `correct`; a bound authority source never
+  // is one.
+  if (src.role === 'correct' && correctionTargets.length === 0) {
     return {
       ok: false,
       errors: [
         {
           code: 'CONTRACT_CONTRADICTION',
-          path: 'target_binding.execution_contract.scope.blockers',
+          path: 'target_binding.execution_contract.correction_targets',
           message:
-            "role 'correct' requires at least one named accepted correction target in scope.blockers; a bound authority source is not itself a correction target",
+            "role 'correct' requires at least one admitted correction target carrying finding provenance and explicit acceptance provenance; a blocker identifier alone authorizes nothing",
+        },
+      ],
+    };
+  }
+  if (src.role !== 'correct' && correctionTargets.length > 0) {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'CONTRACT_CONTRADICTION',
+          path: 'target_binding.execution_contract.correction_targets',
+          message: `role '${src.role}' holds no correction authority, so it carries no admitted correction target`,
         },
       ],
     };
@@ -239,14 +296,23 @@ export function compileRoleEnvelope(input: unknown): RoleEnvelopeResult {
     model: structuredClone(src.model),
     execution_target: src.execution_target,
     objective: template.objective,
-    // Authority is the already-bound set: never the binder's wider catalogue, never a neighbour.
-    authority: { bound_sources: [...src.authority.bound_sources] },
+    // Authority is the already-bound set: never the binder's wider catalogue, never a neighbour. Both
+    // the symbolic references and the resolved evidence identity are carried (T1).
+    authority: {
+      bound_sources: [...src.authority.bound_sources],
+      provenance: structuredClone(src.authority.provenance),
+    },
     scope: structuredClone(src.scope),
+    ...(src.execution_policy ? { execution_policy: structuredClone(src.execution_policy) } : {}),
     jurisdiction: structuredClone(src.jurisdiction),
     permissions: structuredClone(src.permissions),
     // Phase 3 truth, copied. The compiler cannot produce a truth value of its own.
     enforcement_truth: structuredClone(enforcement as EnforcementTruthTable),
+    capability_evidence: structuredClone(capabilityEvidence as EnvironmentEvidence),
+    model_availability: structuredClone(modelAvailability as EnvironmentEvidence),
     acceptance: structuredClone(src.acceptance),
+    assertion_bindings: structuredClone(assertionBindings),
+    correction_targets: structuredClone(correctionTargets),
     verification: { level: src.verification.level },
     limits: structuredClone(src.limits),
     non_goals: [...src.non_goals],
@@ -403,29 +469,29 @@ function reviewIndependenceProhibitions(review: AcceptanceReview | undefined): s
 }
 
 /**
- * Name the accepted correction targets, and their grounding authority, as two separate sets (Phase 4
- * charter §7). `scope.blockers` is WHAT must be corrected — the accepted, frozen findings. The bound
- * authority sources are only WHY those targets are authoritative; a source name is not a finding. No
- * findings registry is consulted or invented: both sets are already resolved truth, and compilation
- * fails closed before this text is authored when no correction target is named.
+ * Name the admitted correction targets and the evidence that admits each one (T6). `scope.blockers`
+ * is WHAT must be corrected; the target is admitted only because a finding resolves AND an explicit
+ * acceptance resolves. No findings registry is consulted or invented: both links are already
+ * resolved truth, and compilation fails closed before this text is authored when none is admitted.
  */
 function correctionTargetRules(contract: ExecutionContract): string[] {
-  const targets = namedCorrectionTargets(contract);
+  const targets = contract.correction_targets;
   const sources = contract.authority.bound_sources;
+  const admitted = targets
+    .map(
+      (target) =>
+        `${target.id} ← finding ${target.finding.binding_id} [${digestLabel(target.finding)}] accepted by ${target.acceptance.binding_id} [${digestLabel(target.acceptance)}]`,
+    )
+    .join('; ');
   return [
-    `the accepted findings are frozen; the accepted correction targets named by this contract are: ${list(targets)}. Correct exactly those findings and nothing else.`,
-    `those correction targets are grounded by the bound authority sources (${list(sources)}): the sources say why the targets are authoritative, and a bound authority source is not itself a correction target.`,
+    `the accepted findings are frozen; the admitted correction targets are: ${list(targets.map((target) => target.id))}. Correct exactly those findings and nothing else.`,
+    `each target is admitted by two resolved evidence links: ${admitted}. A blocker identifier alone admits nothing, and a bound authority source (${list(sources)}) grounds those targets without ever being itself a target.`,
   ];
 }
 
-/**
- * The named accepted correction targets a contract actually carries. Only a populated list of
- * strings counts as a named target: an absent, empty, or malformed value names nothing, and a
- * `correct` envelope must fail closed rather than describe targets it does not have.
- */
-function namedCorrectionTargets(contract: ExecutionContract): string[] {
-  const blockers: unknown = contract.scope.blockers;
-  return Array.isArray(blockers) ? blockers.filter((blocker): blocker is string => typeof blocker === 'string') : [];
+/** Short, stable digest label for instruction text. The full digest is in the resolved artifact. */
+function digestLabel(provenance: { content_digest: string }): string {
+  return provenance.content_digest.slice(0, 12);
 }
 
 // ── Common instruction text ─────────────────────────────────────────────────
@@ -436,7 +502,7 @@ function namedCorrectionTargets(contract: ExecutionContract): string[] {
  */
 function commonOperatingRules(contract: ExecutionContract): string[] {
   const { permissions, jurisdiction } = contract;
-  const rules = [
+  return [
     'before any source read, search, command, or edit: create a bounded dependency-aware TODO list (maximum 8 items) and keep its state updated.',
     'stay inside the declared scope, authority, jurisdiction, and permissions; if a step needs more, stop and report it instead of widening them.',
     'report what you did and what verification actually showed; never report an unverified result as verified.',
@@ -452,10 +518,10 @@ function commonOperatingRules(contract: ExecutionContract): string[] {
       ? 'research is permitted inside the declared scope and authority only; do not widen either.'
       : 'research is off for this contract: do not perform external research, web search, or third-party lookups.',
   ];
-  return rules;
 }
 
 /** Finite terminal conditions shared by every role (Phase 4 charter §15). */
+
 const COMMON_STOP_CONDITIONS = [
   'required acceptance is satisfied and required verification is satisfied. Report the result and stop; a green result stays green.',
   'an authority question cannot be answered from the bound authority sources. Stop and report the ambiguity; do not resolve it by inference.',
@@ -479,26 +545,34 @@ export const ENFORCEMENT_WORDING: Record<EnforcementConstraint, Record<Enforceme
     ENFORCED: 'model selection is hard-enforced by this execution target.',
     INSTRUCTED: 'model selection is instruction-level on this execution target; do not attempt to change the selected model.',
     UNSUPPORTED: 'model selection is not available on this execution target; no instruction can provide it.',
+    NOT_APPLICABLE: 'model selection has no applicable policy in this contract.',
   },
   allowed_tools: {
-    ENFORCED: 'the tool ceiling is hard-enforced by this execution target; tools outside the declared ceiling are refused.',
-    INSTRUCTED: 'the tool ceiling is instruction-level on this execution target. Do not use tools outside the declared ceiling.',
+    ENFORCED:
+      'the tool ceiling is hard-enforced by this execution target against the declared tool policy; tools outside it are refused.',
+    INSTRUCTED: 'the tool ceiling is instruction-level on this execution target. Do not use tools outside the declared tool policy.',
     UNSUPPORTED: 'the tool ceiling cannot be enforced on this execution target, and no instruction replaces enforcement. Stop if the task needs a hard tool ceiling.',
+    NOT_APPLICABLE:
+      'this contract declares no tool policy, so there is no tool ceiling to enforce or to respect. This is NOT "all tools are allowed": no policy was declared at all.',
   },
   allowed_files: {
-    ENFORCED: 'file scope is hard-enforced by this execution target; access outside the declared scope is refused.',
-    INSTRUCTED: 'file scope is instruction-level on this execution target. Do not access files outside the declared scope.',
+    ENFORCED: 'file scope is hard-enforced by this execution target against the exact file policy; access outside it is refused.',
+    INSTRUCTED: 'file scope is instruction-level on this execution target. Do not access files outside the declared file policy.',
     UNSUPPORTED: 'file scope cannot be enforced on this execution target, and no instruction replaces enforcement. Stop if the task needs hard file scope.',
+    NOT_APPLICABLE:
+      'this contract declares no exact file policy, so there is no file scope to enforce. scope.sections and scope.symbols are not file enforcement policy.',
   },
   archaeology_off: {
     ENFORCED: 'the archaeology prohibition is hard-enforced by this execution target.',
     INSTRUCTED: 'the archaeology prohibition is instruction-level on this execution target. Do not perform broad archaeology or repository-wide exploration.',
     UNSUPPORTED: 'the archaeology prohibition cannot be enforced on this execution target, and no instruction replaces enforcement.',
+    NOT_APPLICABLE: 'the archaeology prohibition has no applicable policy in this contract.',
   },
   release_forbidden: {
     ENFORCED: 'the release prohibition is hard-enforced by this execution target.',
     INSTRUCTED: 'the release prohibition is instruction-level on this execution target. Do not tag, publish, deploy, or otherwise release.',
     UNSUPPORTED: 'the release prohibition cannot be enforced on this execution target, and no instruction replaces enforcement.',
+    NOT_APPLICABLE: 'the release prohibition has no applicable policy in this contract.',
   },
 };
 
@@ -531,9 +605,9 @@ export function renderRoleEnvelope(envelope: RoleEnvelope): string {
     ['SCOPE', ...scopeLines(envelope.scope)],
     ['NON-GOALS', ...bullets(envelope.non_goals, 'none declared')],
     ['PERMISSIONS', ...permissionLines(envelope.permissions)],
-    ['ENFORCEMENT TRUTH', ...enforcementLines(envelope.enforcement_truth)],
+    ['ENFORCEMENT TRUTH', ...capabilityEvidenceLines(envelope), ...enforcementLines(envelope.enforcement_truth)],
     ['OPERATING RULES', 'must:', ...bullets(envelope.operating_rules, 'none'), 'must_not:', ...bullets(envelope.prohibitions, 'none')],
-    ['ACCEPTANCE', ...acceptanceLines(envelope.acceptance)],
+    ['ACCEPTANCE', ...acceptanceLines(envelope.acceptance, envelope.assertion_bindings)],
     ['VERIFICATION', `level: ${envelope.verification.level}`],
     ['ESCALATION', ...escalationLines(envelope.limits)],
     ['TERMINAL STATE', ...terminalLines(envelope.terminal_state)],
@@ -577,6 +651,34 @@ function permissionLines(permissions: Permissions): string[] {
 }
 
 /**
+ * What the enforcement truth rests on (T2, T3, H2): the evidence class behind the capability, the
+ * evidence class behind model availability, and the canonical policy that would be enforced. A
+ * reader can therefore tell "the target cannot enforce this" from "the contract declared nothing"
+ * from "nothing here was attested", which the truth table alone cannot express.
+ */
+function capabilityEvidenceLines(envelope: RoleEnvelope): string[] {
+  const capability = envelope.capability_evidence;
+  const availability = envelope.model_availability;
+  const capabilityLine =
+    capability.class === 'attested'
+      ? `capability_evidence: attested by ${capability.source_kind} '${capability.source}'${sourceVersion(capability)} (identity ${capability.evidence_identity}).`
+      : `capability_evidence: unattested claim (identity ${capability.evidence_identity}) — nothing here is attested, so no constraint below is reported ENFORCED.`;
+  const availabilityLine =
+    availability.class === 'attested'
+      ? `model_availability: attested by model_registry '${availability.source}'${sourceVersion(availability)} (identity ${availability.evidence_identity}).`
+      : `model_availability: unattested claim (identity ${availability.evidence_identity}) — the resolved model rests on a claimed inventory, not on an attested registry.`;
+  const tools = envelope.execution_policy?.allowed_tools ?? [];
+  const policyLine = tools.length
+    ? `policy.allowed_tools: ${tools.join(', ')}`
+    : 'policy.allowed_tools: none declared — no tool ceiling exists to enforce, which is not a policy of "all tools allowed".';
+  return [capabilityLine, availabilityLine, policyLine];
+}
+
+function sourceVersion(evidence: { source_version?: string }): string {
+  return evidence.source_version ? ` version ${evidence.source_version}` : '';
+}
+
+/**
  * One line per constraint, always all five, always the truth the binding reported. The truth is
  * printed verbatim next to instructions that cannot overstate it — a reader can see exactly which of
  * these the target actually refuses on its own.
@@ -591,16 +693,27 @@ function enforcementLines(truth: EnforcementTruthTable): string[] {
   });
 }
 
-function acceptanceLines(acceptance: Acceptance): string[] {
+function acceptanceLines(acceptance: Acceptance, assertionBindings: readonly AssertionBinding[]): string[] {
   const review = acceptance.review;
   return [
     'commands:',
     ...bullets(acceptance.commands ?? [], 'none declared'),
     'assertions:',
     ...bullets(acceptance.assertions ?? [], 'none declared'),
+    'assertion_bindings:',
+    ...bullets(assertionBindings.map(assertionBindingLine), 'none declared'),
     `review: required=${review?.required === true}, independence=${review?.independence ?? 'none'}, executor=${review?.executor ?? 'none'}`,
     `review_independence: ${reviewIndependenceTruth(review)}`,
   ];
+}
+
+/**
+ * What a resolved assertion actually proves (T4): a binding to a verifier identity, nothing more.
+ * The line never says the verifier ran — execution evidence belongs to the substrate.
+ */
+function assertionBindingLine(binding: AssertionBinding): string {
+  const kind = binding.source_kind ? ` (${binding.source_kind})` : '';
+  return `${binding.reference} → verifier ${binding.verifier}${kind} — ${ASSERTION_BINDING_TRUTH}, not ASSERTION_VERIFIED: no execution evidence exists inside Charter, and a satisfied assertion may only be reported after the verifier actually ran and passed.`;
 }
 
 /**
@@ -666,6 +779,81 @@ function checkEnforcementTable(value: unknown, err: Err): EnforcementTruthTable 
     }
   }
   return complete ? (value as EnforcementTruthTable) : undefined;
+}
+
+/**
+ * Verifier bindings are transport, not derivation (T4): every entry must already be a complete
+ * binding. A malformed entry is refused rather than rendered as a bound assertion.
+ */
+function checkAssertionBindings(value: unknown, err: Err): AssertionBinding[] {
+  const path = 'target_binding.execution_contract.assertion_bindings';
+  if (!Array.isArray(value)) {
+    err('INVALID_TASK_CONTRACT', path, 'a resolved contract must carry assertion_bindings as a list');
+    return [];
+  }
+  const bindings: AssertionBinding[] = [];
+  for (const entry of value) {
+    const binding = entry as Record<string, unknown>;
+    const complete =
+      isRecord(entry) &&
+      typeof binding.reference === 'string' &&
+      binding.reference.length > 0 &&
+      typeof binding.verifier === 'string' &&
+      binding.verifier.length > 0 &&
+      typeof binding.verifier_digest === 'string' &&
+      binding.verifier_digest.length > 0 &&
+      (binding.source_kind === undefined || typeof binding.source_kind === 'string');
+    if (!complete) {
+      err(
+        'INVALID_TASK_CONTRACT',
+        path,
+        'every assertion binding must carry a reference, a verifier identity, and that binding digest',
+      );
+      continue;
+    }
+    // SAFETY: the completeness check above establishes every field of the entry; the cast only
+    // restores the type of the record this loop just proved complete.
+    bindings.push(entry as unknown as AssertionBinding);
+  }
+  return bindings;
+}
+
+/**
+ * Admitted correction targets are transport too (T6): an entry that does not carry both evidence
+ * links is refused, because a partially-evidenced target would render as admitted authority.
+ */
+function checkCorrectionTargets(value: unknown, err: Err): ResolvedCorrectionTarget[] {
+  const path = 'target_binding.execution_contract.correction_targets';
+  if (!Array.isArray(value)) {
+    err('INVALID_TASK_CONTRACT', path, 'a resolved contract must carry correction_targets as a list');
+    return [];
+  }
+  const targets: ResolvedCorrectionTarget[] = [];
+  for (const entry of value) {
+    if (!isResolvedCorrectionTarget(entry)) {
+      err(
+        'INVALID_TASK_CONTRACT',
+        path,
+        'every correction target must carry its id, finding provenance, and explicit acceptance provenance',
+      );
+      continue;
+    }
+    targets.push(entry);
+  }
+  return targets;
+}
+
+/**
+ * Resolved authority provenance is transport, not derivation (T1): a contract that carries a
+ * malformed provenance entry is refused, because an instruction artifact must not cite authority
+ * whose evidence identity cannot be read.
+ */
+function checkAuthorityProvenance(value: unknown, err: Err): void {
+  const path = 'target_binding.execution_contract.authority.provenance';
+  const authority = isRecord(value) ? value : undefined;
+  if (!authority || !Array.isArray(authority.provenance) || !authority.provenance.every(isEvidenceProvenance)) {
+    err('INVALID_TASK_CONTRACT', path, 'a resolved contract must carry resolved authority provenance');
+  }
 }
 
 function checkUnknownKeys(obj: Record<string, unknown>, allowed: readonly string[], prefix: string, err: Err): void {

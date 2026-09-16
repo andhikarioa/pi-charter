@@ -19,11 +19,12 @@ import { bindSubagentsTarget } from '../../adapters/subagents/subagents-adapter.
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
-import type { Role, TaskContract } from '../contracts/task-contract.ts';
+import type { ExecutionTargetName, Role, TaskContract } from '../contracts/task-contract.ts';
 import {
   bindExecutionTarget,
+  type CapabilityClaim,
+  type ExecutionTargetCapabilities,
   type TargetBindingResult,
-  type ExecutionTargetCapabilitySnapshot,
 } from '../enforcement/target-binding.ts';
 import {
   compileBoundRoleEnvelope,
@@ -39,7 +40,13 @@ import {
   type NextAction,
 } from '../escalation/escalation-policy.ts';
 import { resolveExecutionContract, type ResolutionResult, type ResolverEnv } from '../resolver/resolve.ts';
-import { NEGATIVE_CONTRACTS, POSITIVE_CONTRACTS, ROOT } from '../validation/fixtures.ts';
+import {
+  ASSERTION_BINDER,
+  CORRECTION_BINDER,
+  NEGATIVE_CONTRACTS,
+  POSITIVE_CONTRACTS,
+  ROOT,
+} from '../validation/fixtures.ts';
 import { validateTaskContract, type ValidationResult } from '../validation/validate.ts';
 
 // ── Shared environment (explicit input; never a registry) ───────────────────
@@ -56,6 +63,8 @@ const AMBIGUOUS_BINDER = {
 
 const ENV: ResolverEnv = {
   authorityBinder: BINDER,
+  assertionBinder: ASSERTION_BINDER,
+  correctionBinder: CORRECTION_BINDER,
   profile: {
     workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
     reviewer: { preferred: 'gpt-5.6-sol', fallback: ['deepseek-v4.1-flash'] },
@@ -64,27 +73,25 @@ const ENV: ResolverEnv = {
   available: ['gemini-3.8-flash', 'gpt-5.6-sol', 'deepseek-v4.1-flash'],
 };
 
-const PARENT_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
-  name: 'parent',
-  capabilities: {
-    model_selection: true,
-    fresh_session: false,
-    tool_ceiling: false,
-    file_scope_enforcement: false,
-    independent_review: false,
-  },
+const PARENT_CAPABILITIES: ExecutionTargetCapabilities = {
+  model_selection: true,
+  fresh_session: false,
+  tool_ceiling: false,
+  file_scope_enforcement: false,
+  independent_review: false,
 };
 
-const SUBAGENTS_SNAPSHOT: ExecutionTargetCapabilitySnapshot = {
-  name: 'subagents',
-  capabilities: {
-    model_selection: true,
-    fresh_session: true,
-    tool_ceiling: true,
-    file_scope_enforcement: false,
-    independent_review: true,
-  },
+const SUBAGENTS_CAPABILITIES: ExecutionTargetCapabilities = {
+  model_selection: true,
+  fresh_session: true,
+  tool_ceiling: true,
+  file_scope_enforcement: false,
+  independent_review: true,
 };
+
+const PARENT_SNAPSHOT: CapabilityClaim = { name: 'parent', capabilities: PARENT_CAPABILITIES };
+
+const SUBAGENTS_SNAPSHOT: CapabilityClaim = { name: 'subagents', capabilities: SUBAGENTS_CAPABILITIES };
 
 const NO_COUNTERS: EscalationCounters = {
   clean_retries_used: 0,
@@ -122,14 +129,40 @@ interface PipelineRun {
  * passed, so a failed binding has no artifact to compile from — the ordering, not a flag, is what
  * prevents it.
  */
-function runPipeline(contract: unknown, snapshot: unknown, env: ResolverEnv = ENV): PipelineRun {
+function runPipeline(contract: unknown, capability: CapabilityInput, env: ResolverEnv = ENV): PipelineRun {
   const validated = validateTaskContract(contract, { authorityBinder: env.authorityBinder });
   if (!validated.ok) return { validated };
   const resolved = resolveExecutionContract(validated.contract, env);
   if (!resolved.ok) return { validated, resolved };
-  const bound = bindExecutionTarget({ execution_contract: resolved.contract, capability_snapshot: snapshot });
+  const bound = bindExecutionTarget({ execution_contract: resolved.contract, ...capability });
   if (!bound.ok) return { validated, resolved, bound };
   return { validated, resolved, bound, envelope: compileBoundRoleEnvelope(bound.binding) };
+}
+
+/** The capability evidence channel a run is bound with. Both are explicit and never blended. */
+export type CapabilityInput = { capability_claim: unknown } | { capability_attestation: unknown };
+
+/** A raw capability CLAIM: low-level, never attested, so nothing it says can be hard-enforced (T2). */
+function claimedClaim(claim: unknown): CapabilityInput {
+  return { capability_claim: claim };
+}
+
+/**
+ * ATTESTED capability evidence from an explicit execution adapter (T2). Only this channel can ground
+ * `ENFORCED`, and only together with an applicable canonical policy (T3).
+ */
+function attestedCapability(
+  target: ExecutionTargetName,
+  capabilities: ExecutionTargetCapabilities,
+): CapabilityInput {
+  return {
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: `pi-${target}`,
+      source_version: '0.1.0',
+      payload: { target, capabilities },
+    },
+  };
 }
 
 function envelopeOf(run: PipelineRun): RoleEnvelope {
@@ -176,6 +209,8 @@ const REVIEW_SUBAGENTS: TaskContract = {
   root: ROOT,
   authority: { sources: ['reviewer-findings', 'canonical-master'] },
   scope: { files: ['src/feature.ts'], sections: ['7.3 review'] },
+  // The single canonical tool policy: the ceiling the substrate is asked to hard-enforce (T3).
+  execution_policy: { allowed_tools: ['read', 'grep'] },
   permissions: { code_write: false, research: false, external_write: false, release: false },
   acceptance: {
     assertions: ['findings-reported'],
@@ -232,7 +267,7 @@ const UNSUPPORTED_HARD_ENFORCEMENT: TaskContract = {
 // ── P5-L — §14 implement / parent ───────────────────────────────────────────
 
 test('P5-L implement/parent: valid → workhorse tier → no broadening → truthful parent truth → envelope', () => {
-  const run = runPipeline(IMPLEMENT_PARENT, PARENT_SNAPSHOT);
+  const run = runPipeline(IMPLEMENT_PARENT, attestedCapability('parent', PARENT_CAPABILITIES));
   const contract = contractOf(run);
   const envelope = envelopeOf(run);
 
@@ -253,14 +288,17 @@ test('P5-L implement/parent: valid → workhorse tier → no broadening → trut
     release: false,
   });
 
-  // Truthful parent enforcement: INSTRUCTED where the substrate has no primitive, never ENFORCED.
+  // Truthful parent enforcement (T2, T3): ENFORCED only for the attested model-selection primitive,
+  // NOT_APPLICABLE where this contract declares no tool policy, INSTRUCTED where an exact file policy
+  // exists without a substrate primitive.
   assert.deepEqual(run.bound.binding.enforcement, {
     model_selection: 'ENFORCED',
-    allowed_tools: 'INSTRUCTED',
+    allowed_tools: 'NOT_APPLICABLE',
     allowed_files: 'INSTRUCTED',
     archaeology_off: 'INSTRUCTED',
     release_forbidden: 'INSTRUCTED',
   });
+  assert.equal(run.bound.binding.capability_evidence.class, 'attested');
 
   assert.equal(envelope.role, 'implement');
   assert.equal(envelope.execution_target, 'parent');
@@ -276,8 +314,8 @@ test('P5-L implement/parent: valid → workhorse tier → no broadening → trut
 });
 
 test('P5-L implement/parent: the whole pipeline is deterministic', () => {
-  const first = runPipeline(structuredClone(IMPLEMENT_PARENT), PARENT_SNAPSHOT);
-  const second = runPipeline(structuredClone(IMPLEMENT_PARENT), PARENT_SNAPSHOT);
+  const first = runPipeline(structuredClone(IMPLEMENT_PARENT), attestedCapability('parent', PARENT_CAPABILITIES));
+  const second = runPipeline(structuredClone(IMPLEMENT_PARENT), attestedCapability('parent', PARENT_CAPABILITIES));
   assert.deepEqual(first.resolved, second.resolved);
   assert.deepEqual(first.bound, second.bound);
   assert.deepEqual(first.envelope, second.envelope);
@@ -287,7 +325,7 @@ test('P5-L implement/parent: the whole pipeline is deterministic', () => {
 // ── P5-L — §15 review / subagents ──────────────────────────────────────────
 
 test('P5-L review/subagents: reviewer tier, read-only jurisdiction, independent review admitted', () => {
-  const run = runPipeline(REVIEW_SUBAGENTS, SUBAGENTS_SNAPSHOT);
+  const run = runPipeline(REVIEW_SUBAGENTS, attestedCapability('subagents', SUBAGENTS_CAPABILITIES));
   const contract = contractOf(run);
   const envelope = envelopeOf(run);
   assert.ok(run.bound?.ok);
@@ -310,7 +348,7 @@ test('P5-L review/subagents: reviewer tier, read-only jurisdiction, independent 
 });
 
 test('P5-L review/subagents: the review envelope does not mutate', () => {
-  const envelope = envelopeOf(runPipeline(REVIEW_SUBAGENTS, SUBAGENTS_SNAPSHOT));
+  const envelope = envelopeOf(runPipeline(REVIEW_SUBAGENTS, attestedCapability('subagents', SUBAGENTS_CAPABILITIES)));
   assert.deepEqual(envelope.permissions, {
     code_write: false,
     research: false,
@@ -329,7 +367,7 @@ test('P5-L a parent review that needs independence is refused, not fabricated', 
     execution_target: 'parent',
     task: { id: 'p5-review-parent-independence', class: 'T2', risk: 'high' },
   };
-  const run = runPipeline(parentReview, PARENT_SNAPSHOT);
+  const run = runPipeline(parentReview, attestedCapability('parent', PARENT_CAPABILITIES));
   assert.ok(run.resolved?.ok, 'the contract itself is valid');
   assert.equal(run.bound?.ok, false);
   assert.equal(run.envelope, undefined, 'no envelope is compiled from a failed target binding');
@@ -339,19 +377,22 @@ test('P5-L a parent review that needs independence is refused, not fabricated', 
 // ── P5-L — §16 correct ─────────────────────────────────────────────────────
 
 test('P5-L correct: finding-1 is the named correction target and authority only grounds it', () => {
-  const run = runPipeline(CORRECT_FROZEN, PARENT_SNAPSHOT);
+  const run = runPipeline(CORRECT_FROZEN, attestedCapability('parent', PARENT_CAPABILITIES));
   const envelope = envelopeOf(run);
 
   assert.equal(envelope.role, 'correct');
   assert.deepEqual(envelope.scope.blockers, ['finding-1']);
 
-  const targetRule = envelope.operating_rules.find((rule) => rule.includes('accepted correction targets'));
-  assert.ok(targetRule, 'the envelope must name its accepted correction targets');
+  const targetRule = envelope.operating_rules.find((rule) => rule.includes('admitted correction targets are'));
+  assert.ok(targetRule, 'the envelope must name its admitted correction targets');
   assert.ok(targetRule.includes('finding-1'), 'finding-1 must be named as the correction target');
-
-  const authorityRule = envelope.operating_rules.find((rule) => rule.includes('grounded by the bound authority sources'));
-  assert.ok(authorityRule, 'the authority sources must be stated as grounding, not as a target');
-  assert.ok(authorityRule.includes('reviewer-findings'));
+  // T6: the target is admitted by finding provenance AND explicit acceptance provenance, not by the
+  // identifier alone.
+  const evidenceRule = envelope.operating_rules.find((rule) => rule.includes('two resolved evidence links'));
+  assert.ok(evidenceRule, 'the envelope must state the evidence that admits each target');
+  assert.ok(evidenceRule.includes('review-finding:finding-1'));
+  assert.ok(evidenceRule.includes('owner-acceptance:finding-1'));
+  assert.deepEqual(envelope.correction_targets.map((target) => target.id), ['finding-1']);
 
   // The finding is a target, never an authority source; no second audit authority appears.
   assert.deepEqual(envelope.authority.bound_sources, ['reviewer-findings']);
@@ -362,7 +403,7 @@ test('P5-L correct: finding-1 is the named correction target and authority only 
 });
 
 test('P5-L correct: MECHANICAL_FAILURE with clean_retries_used=0 decides RETRY_SAME_ROLE only', () => {
-  const envelope = envelopeOf(runPipeline(CORRECT_FROZEN, PARENT_SNAPSHOT));
+  const envelope = envelopeOf(runPipeline(CORRECT_FROZEN, attestedCapability('parent', PARENT_CAPABILITIES)));
   const counters: EscalationCounters = { ...NO_COUNTERS };
   const result = decideNextAction({ role_envelope: envelope, outcome: 'MECHANICAL_FAILURE', counters });
 
@@ -377,7 +418,7 @@ test('P5-L correct: MECHANICAL_FAILURE with clean_retries_used=0 decides RETRY_S
 // ── P5-L — §17 adjudicate ──────────────────────────────────────────────────
 
 test('P5-L adjudicate: reasoning tier, bounded semantic authority, no implementation authority, no mutation', () => {
-  const run = runPipeline(ADJUDICATE_BOUNDED, SUBAGENTS_SNAPSHOT);
+  const run = runPipeline(ADJUDICATE_BOUNDED, attestedCapability('subagents', SUBAGENTS_CAPABILITIES));
   const contract = contractOf(run);
   const envelope = envelopeOf(run);
 
@@ -395,7 +436,7 @@ test('P5-L adjudicate: reasoning tier, bounded semantic authority, no implementa
 });
 
 test('P5-L adjudicate: an explicit resolved/unresolved outcome decides deterministically, with no auto-correction', () => {
-  const envelope = envelopeOf(runPipeline(ADJUDICATE_BOUNDED, SUBAGENTS_SNAPSHOT));
+  const envelope = envelopeOf(runPipeline(ADJUDICATE_BOUNDED, attestedCapability('subagents', SUBAGENTS_CAPABILITIES)));
 
   const resolved = decideNextAction({
     role_envelope: envelope,
@@ -434,7 +475,7 @@ test('P5-L adjudicate: an explicit resolved/unresolved outcome decides determini
 // ── P5-L — §18 fail-closed pipeline ────────────────────────────────────────
 
 test('P5-L fail-closed: parent + allowed_tools=required stops at Phase 3 with no envelope', () => {
-  const run = runPipeline(UNSUPPORTED_HARD_ENFORCEMENT, PARENT_SNAPSHOT);
+  const run = runPipeline(UNSUPPORTED_HARD_ENFORCEMENT, attestedCapability('parent', PARENT_CAPABILITIES));
 
   assert.ok(run.validated.ok, 'the TaskContract itself is valid; the target cannot supply the guarantee');
   assert.ok(run.resolved?.ok, 'resolution does not drop the carried requirement');
@@ -450,7 +491,7 @@ test('P5-L fail-closed: parent + allowed_tools=required stops at Phase 3 with no
 
 test('P5-L fail-closed: the Phase 5 policy has no route around the unsupported target', () => {
   // The same contract without the unsatisfiable requirement, so an envelope exists to ask the policy with.
-  const envelope = envelopeOf(runPipeline(IMPLEMENT_PARENT, PARENT_SNAPSHOT));
+  const envelope = envelopeOf(runPipeline(IMPLEMENT_PARENT, attestedCapability('parent', PARENT_CAPABILITIES)));
   const result = decideNextAction({
     role_envelope: envelope,
     outcome: 'EXECUTION_TARGET_UNSUPPORTED',
@@ -500,7 +541,7 @@ test('P5-K E1 model unavailable: explicit fallback only, never silent substituti
   assert.equal(unrelated.ok ? undefined : unrelated.errors[0]?.code, 'MODEL_UNAVAILABLE');
   // The stop is only reachable through the Phase 5 policy as one terminal decision.
   const stopped = decideNextAction({
-    role_envelope: envelopeOf(runPipeline(IMPLEMENT_PARENT, PARENT_SNAPSHOT)),
+    role_envelope: envelopeOf(runPipeline(IMPLEMENT_PARENT, attestedCapability('parent', PARENT_CAPABILITIES))),
     outcome: 'MODEL_UNAVAILABLE',
     counters: NO_COUNTERS,
   });
@@ -555,9 +596,9 @@ test('P5-K E5 unverifiable acceptance fails closed', () => {
 });
 
 test('P5-K E6 bounded escalation: the canonical decision mapping, end to end', () => {
-  const implement = envelopeOf(runPipeline(IMPLEMENT_PARENT, PARENT_SNAPSHOT));
-  const correct = envelopeOf(runPipeline(CORRECT_FROZEN, PARENT_SNAPSHOT));
-  const adjudicate = envelopeOf(runPipeline(ADJUDICATE_BOUNDED, SUBAGENTS_SNAPSHOT));
+  const implement = envelopeOf(runPipeline(IMPLEMENT_PARENT, attestedCapability('parent', PARENT_CAPABILITIES)));
+  const correct = envelopeOf(runPipeline(CORRECT_FROZEN, attestedCapability('parent', PARENT_CAPABILITIES)));
+  const adjudicate = envelopeOf(runPipeline(ADJUDICATE_BOUNDED, attestedCapability('subagents', SUBAGENTS_CAPABILITIES)));
 
   const matrix: {
     id: string;
@@ -638,33 +679,46 @@ test('P5-K E9 equivalent explicit inputs resolve to equivalent ExecutionContract
     assert.deepEqual(first.contract, second.contract, `${fixture.name}: resolution is not deterministic`);
   }
   // The same availability snapshot in a different array order is the same input.
-  const reordered: ResolverEnv = { ...ENV, available: [...ENV.available].reverse() };
+  const reordered: ResolverEnv = { ...ENV, available: [...(ENV.available ?? [])].reverse() };
   assert.deepEqual(
     resolveExecutionContract(positive('critical correction'), ENV),
     resolveExecutionContract(positive('critical correction'), reordered),
   );
 });
 
-test('P5-K E10 enforcement truth is never ENFORCED where the target has no primitive', () => {
-  for (const [contract, snapshot] of [
-    [positive('critical correction'), PARENT_SNAPSHOT],
-    [positive('read-only review'), PARENT_SNAPSHOT],
-    [positive('subagents implement with independent review'), SUBAGENTS_SNAPSHOT],
-  ] as const) {
-    const run = runPipeline(contract, snapshot);
-    assert.ok(run.bound?.ok);
+test('P5-K E10 enforcement truth is never ENFORCED without an attested primitive and a policy', () => {
+  const cases: [string, unknown, ExecutionTargetCapabilities][] = [
+    ['critical correction', positive('critical correction'), PARENT_CAPABILITIES],
+    ['read-only review', positive('read-only review'), PARENT_CAPABILITIES],
+    ['subagents implement with independent review', positive('subagents implement with independent review'), SUBAGENTS_CAPABILITIES],
+  ];
+  for (const [label, contract, capabilities] of cases) {
+    const run = runPipeline(contract, attestedCapability(label.startsWith('subagents') ? 'subagents' : 'parent', capabilities));
+    assert.ok(run.bound?.ok, label);
     if (!run.bound.ok) return;
     const truth = run.bound.binding.enforcement;
 
-    assert.equal(truth.model_selection === 'ENFORCED', snapshot.capabilities.model_selection);
-    assert.equal(truth.allowed_tools === 'ENFORCED', snapshot.capabilities.tool_ceiling);
-    assert.equal(truth.allowed_files === 'ENFORCED', snapshot.capabilities.file_scope_enforcement);
+    assert.equal(truth.model_selection === 'ENFORCED', capabilities.model_selection, label);
+    // No positive fixture declares a tool policy, so the tool dimension is NOT_APPLICABLE — and never
+    // ENFORCED — however capable the attested target is (T3).
+    assert.equal(truth.allowed_tools, 'NOT_APPLICABLE', label);
+    assert.equal(truth.allowed_files === 'ENFORCED', capabilities.file_scope_enforcement, label);
     // Neither v0.1 target owns a primitive for these: instruction only, never ENFORCED.
-    assert.equal(truth.archaeology_off, 'INSTRUCTED');
-    assert.equal(truth.release_forbidden, 'INSTRUCTED');
+    assert.equal(truth.archaeology_off, 'INSTRUCTED', label);
+    assert.equal(truth.release_forbidden, 'INSTRUCTED', label);
   }
 
-  const required = runPipeline(UNSUPPORTED_HARD_ENFORCEMENT, PARENT_SNAPSHOT);
+  // A raw claim is never attested, so nothing it says can produce ENFORCED at all (T2).
+  const claimed = runPipeline(positive('critical correction'), claimedClaim({
+    name: 'parent',
+    capabilities: { ...PARENT_CAPABILITIES, model_selection: true, tool_ceiling: true, file_scope_enforcement: true },
+  }));
+  assert.ok(claimed.bound?.ok);
+  if (!claimed.bound.ok) return;
+  assert.equal(claimed.bound.binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(Object.values(claimed.bound.binding.enforcement).includes('ENFORCED'), false);
+
+  const required = runPipeline(UNSUPPORTED_HARD_ENFORCEMENT, attestedCapability('parent', PARENT_CAPABILITIES));
   assert.ok(required.validated.ok);
   assert.equal(required.bound?.ok, false);
   assert.deepEqual(required.bound?.ok === false ? codes(required.bound.errors) : [], ['UNSUPPORTED_BY_EXECUTION_TARGET']);
@@ -740,7 +794,7 @@ function assertNoLifecycle(artifact: object, what: string): void {
 // ── §41 planner decomposition — full pipeline ───────────────────────────────
 
 test('P5-M planner: the full decomposition pipeline on the parent target ends at the planner envelope', () => {
-  const run = runPipeline(positive('planner decomposition (no mutation)'), PARENT_SNAPSHOT);
+  const run = runPipeline(positive('planner decomposition (no mutation)'), attestedCapability('parent', PARENT_CAPABILITIES));
   const contract = contractOf(run);
   const envelope = envelopeOf(run);
 
@@ -764,7 +818,8 @@ test('P5-M planner: the full decomposition pipeline on the parent target ends at
   assert.deepEqual(envelope.jurisdiction, contract.jurisdiction);
   assert.deepEqual(envelope.scope, contract.scope);
   assert.equal(envelope.enforcement_truth.model_selection, 'ENFORCED');
-  assert.equal(envelope.enforcement_truth.allowed_files, 'INSTRUCTED', 'parent file scope is instruction, not enforcement');
+  // The planner fixture declares no scope entries, so there is no exact file policy to act on (T3).
+  assert.equal(envelope.enforcement_truth.allowed_files, 'NOT_APPLICABLE');
   assert.ok(renderRoleEnvelope(envelope).includes('role: planner'));
   assert.ok(envelope.operating_rules.some((rule) => rule.includes('bounded child TaskContract candidates only')));
   assert.ok(envelope.prohibitions.some((rule) => rule.includes('write, modify, or delete repository content; planning is read-only')));
@@ -793,7 +848,7 @@ test('P5-M cycle: planner → implement → review → correct → review on the
   ];
 
   const stages = cycle.map(({ contract }) => {
-    const run = runPipeline(contract, PARENT_SNAPSHOT);
+    const run = runPipeline(contract, attestedCapability('parent', PARENT_CAPABILITIES));
     return { contract, run, resolved: contractOf(run), envelope: envelopeOf(run) };
   });
 
@@ -835,8 +890,9 @@ test('P5-M cycle: planner → implement → review → correct → review on the
 
   // The correction carries its named blocker, and stays bounded implementation — not a second review.
   assert.deepEqual(correction.envelope.scope.blockers, ['finding-1']);
+  assert.deepEqual(correction.envelope.correction_targets.map((target) => target.id), ['finding-1']);
   assert.ok(
-    correction.envelope.operating_rules.some((rule) => rule.includes('accepted correction targets') && rule.includes('finding-1')),
+    correction.envelope.operating_rules.some((rule) => rule.includes('admitted correction targets are') && rule.includes('finding-1')),
   );
   assert.equal(correction.envelope.jurisdiction.implementation, 'bounded');
   assert.equal(correction.envelope.jurisdiction.architecture, 'none');
@@ -846,7 +902,7 @@ test('P5-M cycle: planner → implement → review → correct → review on the
   // deep-equal — nothing accumulated, and no artifact carries a step or lifecycle field.
   const recomputed = [...cycle]
     .reverse()
-    .map(({ contract }) => runPipeline(structuredClone(contract), PARENT_SNAPSHOT))
+    .map(({ contract }) => runPipeline(structuredClone(contract), attestedCapability('parent', PARENT_CAPABILITIES)))
     .reverse();
   assert.deepEqual(
     recomputed.map((run) => ({ resolved: run.resolved, bound: run.bound, envelope: run.envelope })),
@@ -867,7 +923,15 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assert.ok(validated.ok);
   const resolved = resolveExecutionContract(validated.contract, ENV);
   assert.ok(resolved.ok, 'the review contract must resolve');
-  const bound = bindSubagentsTarget({ execution_contract: resolved.contract, capability_snapshot: SUBAGENTS_SNAPSHOT });
+  const bound = bindSubagentsTarget({
+    execution_contract: resolved.contract,
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: 'pi-subagents',
+      source_version: '0.1.0',
+      payload: { target: 'subagents', capabilities: SUBAGENTS_CAPABILITIES },
+    },
+  });
   assert.ok(bound.ok, 'the subagents target must accept this contract');
   if (!bound.ok) return;
   const handoff = bound.handoff;
@@ -879,6 +943,7 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assert.equal(handoff.model, resolved.contract.model.resolved);
   assert.equal(handoff.model, ENV.profile.reviewer?.preferred);
   assert.equal(handoff.fresh_session_required, true);
+  // The review contract declares an exact tool policy, so the attested ceiling is really ENFORCED.
   assert.deepEqual(handoff.enforcement, {
     model_selection: 'ENFORCED',
     allowed_tools: 'ENFORCED',
@@ -886,14 +951,18 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
     archaeology_off: 'INSTRUCTED',
     release_forbidden: 'INSTRUCTED',
   });
+  assert.deepEqual(handoff.allowed_tools, REVIEW_SUBAGENTS.execution_policy?.allowed_tools);
+  assert.equal(handoff.capability_evidence.class, 'attested');
 
   // The resolved ExecutionContract crosses unchanged, as a value rather than a handle.
   assert.deepEqual(handoff.execution_contract, resolved.contract);
   assert.notEqual(handoff.execution_contract, resolved.contract);
 
-  // The handoff surface is exactly these six fields: no role envelope rides in it, and no runtime
-  // bridge, child, session, or lifecycle handle exists to cross.
+  // The handoff surface is exactly these fields: no role envelope rides in it, and no runtime bridge,
+  // child, session, or lifecycle handle exists to cross.
   assert.deepEqual(Object.keys(handoff).sort(), [
+    'allowed_tools',
+    'capability_evidence',
     'enforcement',
     'execution_contract',
     'fresh_session_required',
@@ -907,9 +976,21 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assertNoLifecycle(handoff, 'the handoff');
 
   // RoleEnvelope stays core-only: it is compiled from a Phase 3 binding, never from the handoff.
+  // That binding must be attested — a claim cannot satisfy this contract's hard capability
+  // requirements (T2), which is why the envelope is compiled from the strong path here.
+  const claimedBinding = bindExecutionTarget({
+    execution_contract: resolved.contract,
+    capability_claim: SUBAGENTS_SNAPSHOT,
+  });
+  assert.equal(claimedBinding.ok, false, 'a raw claim cannot satisfy this contract\'s hard capability requirements');
   const coreBinding = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_snapshot: SUBAGENTS_SNAPSHOT,
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: 'pi-subagents',
+      source_version: '0.1.0',
+      payload: { target: 'subagents', capabilities: SUBAGENTS_CAPABILITIES },
+    },
   });
   assert.ok(coreBinding.ok);
   const envelope = compileBoundRoleEnvelope(coreBinding.binding);
@@ -923,7 +1004,15 @@ test('P5-M subagents handoff: another target is refused, and an absent review re
   // No target substitution: a parent contract cannot borrow the subagents path.
   const parentResolved = resolveExecutionContract(structuredClone(IMPLEMENT_PARENT), ENV);
   assert.ok(parentResolved.ok);
-  const refused = bindSubagentsTarget({ execution_contract: parentResolved.contract, capability_snapshot: PARENT_SNAPSHOT });
+  const refused = bindSubagentsTarget({
+    execution_contract: parentResolved.contract,
+    capability_attestation: {
+      source_kind: 'execution_adapter',
+      source: 'pi-parent',
+      source_version: '0.1.0',
+      payload: { target: 'parent', capabilities: PARENT_CAPABILITIES },
+    },
+  });
   assert.equal(refused.ok, false);
   assert.deepEqual(refused.ok === false ? codes(refused.errors) : [], ['CONTRACT_CONTRADICTION']);
 
@@ -937,7 +1026,7 @@ test('P5-M subagents handoff: another target is refused, and an absent review re
   const resolved = resolveExecutionContract(validated.contract, ENV);
   assert.ok(resolved.ok);
   assert.equal(resolved.contract.execution_target, 'subagents');
-  const bound = bindSubagentsTarget({ execution_contract: resolved.contract, capability_snapshot: SUBAGENTS_SNAPSHOT });
+  const bound = bindSubagentsTarget({ execution_contract: resolved.contract, capability_claim: SUBAGENTS_SNAPSHOT });
   assert.ok(bound.ok);
   assert.equal(bound.ok ? bound.handoff.fresh_session_required : true, false);
   assert.equal(bound.ok ? bound.handoff.model : undefined, resolved.contract.model.resolved);
