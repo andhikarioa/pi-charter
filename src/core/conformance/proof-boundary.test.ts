@@ -19,6 +19,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAttestationVerifier, type AttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
@@ -26,6 +27,7 @@ import {
   bindExecutionTarget,
   type ExecutionTargetCapabilities,
   type TargetBinding,
+  type TargetBindingResult,
 } from '../enforcement/target-binding.ts';
 import {
   compileBoundRoleEnvelope,
@@ -35,7 +37,7 @@ import {
 import { createEvidenceBinder, type EvidenceBinder } from '../provenance/evidence.ts';
 import { createResolutionReceipt, type ResolutionReceipt } from '../receipt/resolution-receipt.ts';
 import { resolveExecutionContract, type ResolverEnv } from '../resolver/resolve.ts';
-import type { ModelProfile } from '../routing/model-routing.ts';
+import { resolveModelAvailability, type ModelProfile } from '../routing/model-routing.ts';
 import { validateTaskContract } from '../validation/validate.ts';
 
 // ── Fixtures (explicit input; never a registry) ─────────────────────────────
@@ -122,8 +124,8 @@ function allTrueClaim(target: 'parent' | 'subagents'): Record<string, unknown> {
   return { name: target, capabilities };
 }
 
-/** Attested capability evidence from an explicit execution adapter (the strong path). */
-function attestation(
+/** The attestation this fixture environment issues for one adapter: what a real issuer would emit. */
+function issued(
   target: 'parent' | 'subagents',
   capabilities: ExecutionTargetCapabilities,
 ): Record<string, unknown> {
@@ -135,7 +137,37 @@ function attestation(
   };
 }
 
-type CapabilityInput = { capability_claim: unknown } | { capability_attestation: unknown };
+/**
+ * The environment's explicit attestation boundary (W1_ATTESTATION_SELF_PROMOTION).
+ *
+ * This fixture IS the environment for these adapters, and this line is where it says so: it vouches
+ * for exactly the attestation it issued, compared by canonical identity over the whole attestation. A
+ * candidate that reuses an adapter name, version, and source kind with different capabilities is not
+ * the attestation this environment issued, so it is not vouched for. Charter never decides this, and
+ * nothing a caller submits can occupy the verifier's position — it is a capability the environment
+ * supplies, standing in for the Wave 2 issuer.
+ */
+function boundary(
+  target: 'parent' | 'subagents',
+  capabilities: ExecutionTargetCapabilities,
+): AttestationVerifier {
+  return createAttestationVerifier([issued(target, capabilities)]);
+}
+
+/** Attested capability input: the submitted candidate, plus the boundary that vouches for it. */
+function attestation(
+  target: 'parent' | 'subagents',
+  capabilities: ExecutionTargetCapabilities,
+): CapabilityInput {
+  return {
+    capability_attestation: issued(target, capabilities),
+    capability_attestation_verifier: boundary(target, capabilities),
+  };
+}
+
+type CapabilityInput =
+  | { capability_claim: unknown }
+  | { capability_attestation: unknown; capability_attestation_verifier?: AttestationVerifier };
 
 interface Chain {
   contract: ExecutionContract;
@@ -181,6 +213,9 @@ function chain(
     ...(resolverEnv.model_availability_attestation === undefined
       ? {}
       : { model_availability_attestation: resolverEnv.model_availability_attestation }),
+    ...(resolverEnv.model_availability_attestation_verifier === undefined
+      ? {}
+      : { model_availability_attestation_verifier: resolverEnv.model_availability_attestation_verifier }),
     compiler_identity: options.compilerIdentity ?? COMPILER,
     target_binding: bound.binding,
     ...capability,
@@ -214,8 +249,8 @@ function receiptRefusal(input: unknown): string[] {
 // ── T1 — authority reference vs resolved evidence identity ──────────────────
 
 test('T1/A1 — the same reference with the same canonical content is the same evidence', () => {
-  const first = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
-  const second = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
+  const first = chain(implementTask(), attestation('parent', PARENT));
+  const second = chain(implementTask(), attestation('parent', PARENT));
 
   assert.deepEqual(first.contract.authority.provenance, second.contract.authority.provenance);
   assert.equal(first.receipt.receipt_identity, second.receipt.receipt_identity);
@@ -228,8 +263,8 @@ test('T1/A1 — the same reference with the same canonical content is the same e
 });
 
 test('T1/A2 + A3 — the same reference with changed content cannot reuse the old proof identity', () => {
-  const before = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
-  const after = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) }, {
+  const before = chain(implementTask(), attestation('parent', PARENT));
+  const after = chain(implementTask(), attestation('parent', PARENT), {
     resolverEnv: env({ authorityBinder: createAuthorityBinder(authoritySources(8)) }),
   });
 
@@ -266,7 +301,7 @@ test('T1/A5 — a duplicate or ambiguous authority reference still fails closed'
 // ── H1 — compiler identity ──────────────────────────────────────────────────
 
 test('H1 — a compiler identity is required, distinct from contract_version, and committed', () => {
-  const run = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) }).run;
+  const run = chain(implementTask(), attestation('parent', PARENT)).run;
 
   assert.equal(run.compiler_identity, COMPILER);
   assert.deepEqual(receiptRefusal({ ...run, compiler_identity: undefined }), ['INVALID_TASK_CONTRACT']);
@@ -313,7 +348,7 @@ test('T2/E1 — an all-true capability claim produces no ENFORCED truth anywhere
   // The attested twin of the same evidence DOES report ENFORCED where an applicable policy exists.
   const attested = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_attestation: attestation('parent', PARENT),
+    ...attestation('parent', PARENT),
   });
   assert.ok(attested.ok);
   if (!attested.ok) return;
@@ -337,7 +372,7 @@ test('T3/E2 — an attested tool ceiling with no tool policy enforces nothing, a
   // Capability is attested true, and there is still nothing to enforce: the policy is what is missing.
   const bound = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_attestation: attestation('subagents', ALL_CAPABLE),
+    ...attestation('subagents', ALL_CAPABLE),
   });
   assert.equal(bound.ok, false);
   if (bound.ok) return;
@@ -356,7 +391,7 @@ test('T3/E2 — an attested tool ceiling with no tool policy enforces nothing, a
   if (!withPolicy.ok) return;
   const satisfiable = bindExecutionTarget({
     execution_contract: withPolicy.contract,
-    capability_attestation: attestation('subagents', ALL_CAPABLE),
+    ...attestation('subagents', ALL_CAPABLE),
   });
   assert.ok(satisfiable.ok);
   if (!satisfiable.ok) return;
@@ -375,7 +410,7 @@ test('T3/E3 — a sections-only scope is not a file policy; exact scope.files is
   const fileCapable: ExecutionTargetCapabilities = { ...PARENT, file_scope_enforcement: true };
   const sectionsBinding = bindExecutionTarget({
     execution_contract: sectionsOnly.contract,
-    capability_attestation: attestation('parent', fileCapable),
+    ...attestation('parent', fileCapable),
   });
   assert.ok(sectionsBinding.ok);
   if (!sectionsBinding.ok) return;
@@ -387,7 +422,7 @@ test('T3/E3 — a sections-only scope is not a file policy; exact scope.files is
   if (!exact.ok) return;
   const exactBinding = bindExecutionTarget({
     execution_contract: exact.contract,
-    capability_attestation: attestation('parent', fileCapable),
+    ...attestation('parent', fileCapable),
   });
   assert.ok(exactBinding.ok);
   if (!exactBinding.ok) return;
@@ -397,22 +432,28 @@ test('T3/E3 — a sections-only scope is not a file policy; exact scope.files is
 // ── H2 — model availability evidence ────────────────────────────────────────
 
 test('H2/M1 — a raw availability list is a claim, and an attested inventory is distinguishable', () => {
-  const claimed = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
+  const registry = {
+    source_kind: 'model_registry',
+    source: 'pi-model-registry',
+    source_version: '0.4.1',
+    payload: { models: [...AVAILABLE] },
+  };
+  /** The registry this environment runs, and the boundary that vouches for its own inventory. */
+  const registryBoundary = createAttestationVerifier([registry]);
+  const changedRegistry = { ...registry, payload: { models: ['gemini-3.8-flash', 'deepseek-v4.1-flash'] } };
+
+  const claimed = chain(implementTask(), attestation('parent', PARENT));
   assert.equal(claimed.receipt.model_availability_evidence.class, 'unattested_claim');
   assert.equal(claimed.contract.model_availability.class, 'unattested_claim');
 
   const attested = chain(
     implementTask(),
-    { capability_attestation: attestation('parent', PARENT) },
+    attestation('parent', PARENT),
     {
       resolverEnv: env({
         available: undefined,
-        model_availability_attestation: {
-          source_kind: 'model_registry',
-          source: 'pi-model-registry',
-          source_version: '0.4.1',
-          payload: { models: [...AVAILABLE] },
-        },
+        model_availability_attestation: registry,
+        model_availability_attestation_verifier: registryBoundary,
       }),
     },
   );
@@ -428,16 +469,12 @@ test('H2/M1 — a raw availability list is a claim, and an attested inventory is
   // A changed inventory moves the evidence identity; an unrecognized source kind fails closed.
   const changedInventory = chain(
     implementTask(),
-    { capability_attestation: attestation('parent', PARENT) },
+    attestation('parent', PARENT),
     {
       resolverEnv: env({
         available: undefined,
-        model_availability_attestation: {
-          source_kind: 'model_registry',
-          source: 'pi-model-registry',
-          source_version: '0.4.1',
-          payload: { models: ['gemini-3.8-flash', 'deepseek-v4.1-flash'] },
-        },
+        model_availability_attestation: changedRegistry,
+        model_availability_attestation_verifier: createAttestationVerifier([changedRegistry]),
       }),
     },
   );
@@ -467,7 +504,7 @@ test('H2/M1 — a raw availability list is a claim, and an attested inventory is
 // ── T4 — assertions are bound to a verifier identity, never verified ────────
 
 test('T4/V1 — a bound assertion resolves, and says ASSERTION_BOUND rather than VERIFIED', () => {
-  const run = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
+  const run = chain(implementTask(), attestation('parent', PARENT));
 
   assert.deepEqual(run.contract.assertion_bindings.map((binding) => binding.reference), ['p7-no-blind-replay']);
   const [binding] = run.contract.assertion_bindings;
@@ -480,8 +517,8 @@ test('T4/V1 — a bound assertion resolves, and says ASSERTION_BOUND rather than
 });
 
 test('T4/V2 — binding the same assertion to a different verifier moves the resolved proof identity', () => {
-  const before = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
-  const rerouted = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) }, {
+  const before = chain(implementTask(), attestation('parent', PARENT));
+  const rerouted = chain(implementTask(), attestation('parent', PARENT), {
     resolverEnv: env({
       assertionBinder: createEvidenceBinder({ 'p7-no-blind-replay': 'go-test:TestP7BlindReplay' }),
     }),
@@ -533,7 +570,7 @@ test('T4/V3 + V4 — an unbound, ambiguous, or unverifiable assertion fails clos
 // ── T6 — admitted correction authority ──────────────────────────────────────
 
 test('T6/C1 — finding provenance plus explicit acceptance admits the target, and only that target', () => {
-  const run = chain(correctionTask(['finding-1']), { capability_attestation: attestation('parent', PARENT) }, {
+  const run = chain(correctionTask(['finding-1']), attestation('parent', PARENT), {
     correction: true,
   });
 
@@ -582,8 +619,8 @@ test('T6/C2 + C3 — either missing evidence link refuses; a blocker identifier 
 // ── Non-regression: the same evidence twice is the same proof ───────────────
 
 test('Wave 1 — the whole chain is deterministic and the receipt commits to resolved evidence', () => {
-  const first = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
-  const second = chain(implementTask(), { capability_attestation: attestation('parent', PARENT) });
+  const first = chain(implementTask(), attestation('parent', PARENT));
+  const second = chain(implementTask(), attestation('parent', PARENT));
 
   assert.deepEqual(first.contract, second.contract);
   assert.deepEqual(first.binding, second.binding);
@@ -598,4 +635,231 @@ test('Wave 1 — the whole chain is deterministic and the receipt commits to res
   // changes the receipt identity, and the compiler identity is committed alongside it.
   assert.deepEqual(first.receipt.authority_provenance, first.contract.authority.provenance);
   assert.equal(first.receipt.compiler_identity, COMPILER);
+});
+
+// ── W1 correction — an attestation candidate cannot promote itself ──────────
+
+/**
+ * The subagents environment this fixture really runs: no tool ceiling, no file-scope enforcement. A
+ * candidate claiming otherwise — even carrying the real adapter's name and version — is not what
+ * this environment issued, so it is not vouched for.
+ */
+const REAL_SUBAGENTS: ExecutionTargetCapabilities = {
+  ...ALL_CAPABLE,
+  tool_ceiling: false,
+  file_scope_enforcement: false,
+};
+
+/** Bind through the same real chain these probes assert on: public functions only, no helper internals. */
+function bindingFor(task: TaskContract, capability: CapabilityInput): TargetBindingResult {
+  const resolverEnv = env();
+  const validated = validateTaskContract(task, { authorityBinder: resolverEnv.authorityBinder });
+  assert.ok(validated.ok, 'fixture must validate');
+  if (!validated.ok) throw new Error('unreachable');
+  const resolved = resolveExecutionContract(validated.contract, resolverEnv);
+  assert.ok(resolved.ok, 'fixture must resolve');
+  if (!resolved.ok) throw new Error('unreachable');
+  return bindExecutionTarget({ execution_contract: resolved.contract, ...capability });
+}
+
+/** True when any constraint in this table was reported ENFORCED. */
+function anyEnforced(binding: TargetBinding): boolean {
+  return Object.values(binding.enforcement).includes('ENFORCED');
+}
+
+test('W1-A1/A2/A3 — no capability object promotes itself to trusted ENFORCED', () => {
+  const task = implementTask();
+
+  // A1 — a raw claim, every axis true, is still a claim.
+  const claimed = bindingFor(task, { capability_claim: allTrueClaim('parent') });
+  assert.ok(claimed.ok);
+  if (!claimed.ok) return;
+  assert.equal(claimed.binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(anyEnforced(claimed.binding), false);
+
+  // A2 — the same all-true capabilities in an admitted 'execution_adapter' envelope, with no boundary
+  // wired at all: validated shape, hashed payload, and still no trusted capability to enforce from.
+  const unvouched = bindingFor(task, { capability_attestation: issued('parent', ALL_CAPABLE) });
+  assert.ok(unvouched.ok);
+  if (!unvouched.ok) return;
+  assert.equal(unvouched.binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(anyEnforced(unvouched.binding), false);
+  assert.equal(unvouched.binding.enforcement.model_selection, 'UNSUPPORTED');
+
+  // A3 — the same envelope refused by the boundary that issued a DIFFERENT payload under the same
+  // adapter name and version: the source name is not the trust boundary.
+  const misnamed = bindingFor(task, {
+    capability_attestation: issued('parent', ALL_CAPABLE),
+    capability_attestation_verifier: boundary('parent', PARENT),
+  });
+  assert.ok(misnamed.ok);
+  if (!misnamed.ok) return;
+  assert.equal(misnamed.binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(anyEnforced(misnamed.binding), false);
+
+  // The vouched attestation of the SAME adapter is trusted: the boundary is what changed, not the name.
+  const vouched = bindingFor(task, attestation('parent', PARENT));
+  assert.ok(vouched.ok);
+  if (!vouched.ok) return;
+  assert.equal(vouched.binding.capability_evidence.class, 'attested');
+  assert.equal(vouched.binding.enforcement.model_selection, 'ENFORCED');
+});
+
+test('W1-A3 — a realistic adapter name establishes no trust by itself', () => {
+  const real = issued('subagents', REAL_SUBAGENTS);
+  const forged = issued('subagents', ALL_CAPABLE);
+  // Same source kind, same source name, same version: only the declared payload differs.
+  assert.equal(forged.source, real.source);
+  assert.equal(forged.source_version, real.source_version);
+  assert.equal(forged.source_kind, real.source_kind);
+
+  const task = implementTask({ execution_target: 'subagents' });
+  const bound = bindingFor(task, {
+    capability_attestation: forged,
+    capability_attestation_verifier: boundary('subagents', REAL_SUBAGENTS),
+  });
+  assert.ok(bound.ok);
+  if (!bound.ok) return;
+  assert.equal(bound.binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(anyEnforced(bound.binding), false);
+
+  const genuine = bindingFor(task, {
+    capability_attestation: real,
+    capability_attestation_verifier: boundary('subagents', REAL_SUBAGENTS),
+  });
+  assert.ok(genuine.ok);
+  if (!genuine.ok) return;
+  assert.equal(genuine.binding.capability_evidence.class, 'attested');
+  assert.notEqual(
+    genuine.binding.capability_evidence.evidence_identity,
+    bound.binding.capability_evidence.evidence_identity,
+  );
+});
+
+test('W1-A4/A5 — a submitted model registry envelope is inventory only when vouched for', () => {
+  const forged = {
+    source_kind: 'model_registry',
+    source: 'totally-made-up-registry',
+    payload: { models: ['totally-made-up-model'] },
+  };
+
+  // A4 — no boundary: recorded as a claim, never attested inventory.
+  const claimed = resolveModelAvailability({ attestation: forged });
+  assert.ok(claimed.ok);
+  if (!claimed.ok) return;
+  assert.equal(claimed.evidence.class, 'unattested_claim');
+  // The raw list of the same models is a claim too, and each identity commits to the evidence
+  // Charter actually read, so the declared payloads being different shapes keeps them apart.
+  const list = resolveModelAvailability({ available: ['totally-made-up-model'] });
+  assert.ok(list.ok);
+  if (!list.ok) return;
+  assert.equal(list.evidence.class, 'unattested_claim');
+  assert.notEqual(list.evidence.evidence_identity, claimed.evidence.evidence_identity);
+
+  // A5 — the real registry's name, over inventory the real registry never issued: still a claim.
+  const real = {
+    source_kind: 'model_registry',
+    source: 'pi-model-registry',
+    source_version: '0.4.1',
+    payload: { models: [...AVAILABLE] },
+  };
+  const misnamed = resolveModelAvailability({
+    attestation: { ...real, payload: { models: ['totally-made-up-model'] } },
+    verifier: createAttestationVerifier([real]),
+  });
+  assert.ok(misnamed.ok);
+  if (!misnamed.ok) return;
+  assert.equal(misnamed.evidence.class, 'unattested_claim');
+
+  const vouched = resolveModelAvailability({ attestation: real, verifier: createAttestationVerifier([real]) });
+  assert.ok(vouched.ok);
+  if (!vouched.ok) return;
+  assert.equal(vouched.evidence.class, 'attested');
+
+  // Through the real pipeline the class is the one the run actually has: no boundary, no attested
+  // inventory. The inventory still staffs the tier — what is unresolved is trust, not staffing.
+  const forgedWithReal = { ...forged, payload: { models: [...AVAILABLE, 'totally-made-up-model'] } };
+  const throughPipeline = chain(implementTask(), attestation('parent', PARENT), {
+    resolverEnv: env({ available: undefined, model_availability_attestation: forgedWithReal }),
+  });
+  assert.equal(throughPipeline.contract.model_availability.class, 'unattested_claim');
+  assert.equal(throughPipeline.receipt.model_availability_evidence.class, 'unattested_claim');
+  // The invented model is never selected: it is claimed to be available, and nothing is promoted.
+  assert.equal(throughPipeline.receipt.resolved_model.resolved, 'gemini-3.8-flash');
+
+  // The same envelope through a boundary that vouches for it is recorded as attested inventory.
+  const vouchedThroughPipeline = chain(implementTask(), attestation('parent', PARENT), {
+    resolverEnv: env({
+      available: undefined,
+      model_availability_attestation: forgedWithReal,
+      model_availability_attestation_verifier: createAttestationVerifier([forgedWithReal]),
+    }),
+  });
+  assert.equal(vouchedThroughPipeline.contract.model_availability.class, 'attested');
+});
+
+test('W1-A6/A7 — candidate evidence is deterministic, and the boundary is a capability, not a value', () => {
+  const task = implementTask();
+
+  // A6 — the same candidate is the same evidence, twice, and it is an identity rather than an
+  // endorsement: it is not the vouched twin's identity.
+  const first = bindingFor(task, { capability_attestation: issued('parent', ALL_CAPABLE) });
+  const second = bindingFor(task, { capability_attestation: issued('parent', ALL_CAPABLE) });
+  assert.ok(first.ok && second.ok);
+  if (!first.ok || !second.ok) return;
+  assert.deepEqual(first.binding.capability_evidence, second.binding.capability_evidence);
+  assert.deepEqual(first.binding.enforcement, second.binding.enforcement);
+  const vouched = bindingFor(task, attestation('parent', ALL_CAPABLE));
+  assert.ok(vouched.ok);
+  if (!vouched.ok) return;
+  assert.notEqual(
+    vouched.binding.capability_evidence.evidence_identity,
+    first.binding.capability_evidence.evidence_identity,
+  );
+
+  // A7 — the trusted path still crosses the explicit boundary: a submitted object cannot occupy the
+  // verifier's position, and a boundary supplied where it governs nothing is a contradiction.
+  const substituted = bindingFor(task, {
+    capability_attestation: issued('parent', ALL_CAPABLE),
+    capability_attestation_verifier: { vouches: true } as unknown as AttestationVerifier,
+  });
+  assert.deepEqual(codes(substituted), ['INVALID_TASK_CONTRACT']);
+
+  const idleBoundary = bindingFor(task, {
+    capability_claim: allTrueClaim('parent'),
+    capability_attestation_verifier: boundary('parent', PARENT),
+  });
+  assert.deepEqual(codes(idleBoundary), ['CONTRACT_CONTRADICTION']);
+
+  // A boundary that refuses vouches for nothing: the candidate stays a claim.
+  const refusing = bindingFor(task, {
+    capability_attestation: issued('parent', ALL_CAPABLE),
+    capability_attestation_verifier: () => false,
+  });
+  assert.ok(refusing.ok);
+  if (!refusing.ok) return;
+  assert.equal(refusing.binding.capability_evidence.class, 'unattested_claim');
+});
+
+test('W1-A8/A9/A10/A11 — vouched capability still needs an applicable policy, and NOT_APPLICABLE survives', () => {
+  // A8 — a vouched tool ceiling plus the contract's own tool policy is ENFORCED.
+  const toolPolicy = chain(
+    implementTask({ execution_target: 'subagents', execution_policy: { allowed_tools: ['read', 'edit'] } }),
+    attestation('subagents', ALL_CAPABLE),
+  );
+  assert.equal(toolPolicy.binding.enforcement.allowed_tools, 'ENFORCED');
+  assert.equal(toolPolicy.binding.enforcement.model_selection, 'ENFORCED');
+
+  // A10 — vouched capability with no declared tool policy: there is nothing to enforce.
+  const noPolicy = chain(implementTask({ execution_target: 'subagents' }), attestation('subagents', ALL_CAPABLE));
+  assert.equal(noPolicy.binding.enforcement.allowed_tools, 'NOT_APPLICABLE');
+
+  // A9 — vouched file-scope enforcement plus exact scope.files is ENFORCED.
+  const fileCapable: ExecutionTargetCapabilities = { ...PARENT, file_scope_enforcement: true };
+  const exactFiles = chain(implementTask(), attestation('parent', fileCapable));
+  assert.equal(exactFiles.binding.enforcement.allowed_files, 'ENFORCED');
+
+  // A11 — sections are never a file policy, vouched capability or not.
+  const sectionsOnly = chain(implementTask({ scope: { sections: ['P7'] } }), attestation('parent', fileCapable));
+  assert.equal(sectionsOnly.binding.enforcement.allowed_files, 'NOT_APPLICABLE');
 });

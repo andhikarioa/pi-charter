@@ -9,9 +9,10 @@
 
 import type { EnvironmentEvidence } from '../attestation/attestation.ts';
 import {
-  attestedEvidence,
-  checkAttestationEnvelope,
+  checkAttestationCandidate,
   claimedEvidence,
+  resolveAttestationEvidence,
+  type AttestationVerifier,
 } from '../attestation/attestation.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { Risk, Role, TaskClass } from '../contracts/task-contract.ts';
@@ -57,13 +58,20 @@ const AVAILABILITY_PAYLOAD_KEYS = ['models'] as const;
  * Resolve model availability from exactly one evidence channel (v0.1.1 H2).
  *
  * A raw availability list is a CLAIM: it is accepted, classified as `unattested_claim`, and recorded
- * as such, so it can never be read later as attested registry truth. An attestation is traceable to
- * an admitted `model_registry` source and carries a deterministic identity over its canonical
- * payload. Supplying both channels, neither, or an unrecognized attestation source fails closed.
+ * as such, so it can never be read later as attested registry truth.
+ *
+ * A submitted registry envelope is a CANDIDATE, not a fact: it is validated fail-closed, and it
+ * becomes attested inventory only when the explicit verifier the environment supplied vouches for it
+ * (W1_ATTESTATION_SELF_PROMOTION). A candidate nobody vouches for — including one that declares a
+ * realistic registry name — is recorded as the claim it is, and grounds no attested inventory.
+ * Supplying both channels, neither, an unrecognized attestation source, or a verifier on the claim
+ * channel fails closed.
  */
 export function resolveModelAvailability(input: {
   available?: unknown;
   attestation?: unknown;
+  /** The explicit trusted-attestation boundary. A capability, never a submitted value. */
+  verifier?: AttestationVerifier;
 }): { ok: true; models: string[]; evidence: EnvironmentEvidence } | { ok: false; error: CharterError } {
   const hasClaim = input.available !== undefined;
   const hasAttestation = input.attestation !== undefined;
@@ -87,6 +95,30 @@ export function resolveModelAvailability(input: {
       },
     };
   }
+  // A boundary with nothing to verify is a contradiction: the verifier is only ever read on the
+  // envelope channel, so a raw list can never be read as vouched for.
+  if (input.verifier !== undefined && !hasAttestation) {
+    return {
+      ok: false,
+      error: {
+        code: 'CONTRACT_CONTRADICTION',
+        path: 'env.model_availability_attestation_verifier',
+        message:
+          'env.model_availability_attestation_verifier is present with no attestation to verify; a trust boundary is never supplied for a channel it does not govern',
+      },
+    };
+  }
+  if (input.verifier !== undefined && typeof input.verifier !== 'function') {
+    return {
+      ok: false,
+      error: {
+        code: 'INVALID_TASK_CONTRACT',
+        path: 'env.model_availability_attestation_verifier',
+        message:
+          'env.model_availability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+      },
+    };
+  }
 
   if (hasClaim) {
     if (!isModelList(input.available)) {
@@ -104,7 +136,7 @@ export function resolveModelAvailability(input: {
   }
 
   const errors: CharterError[] = [];
-  const envelope = checkAttestationEnvelope(
+  const envelope = checkAttestationCandidate(
     input.attestation,
     'env.model_availability_attestation',
     'model_registry',
@@ -137,14 +169,19 @@ export function resolveModelAvailability(input: {
       'the attested inventory must be a list of exact provider/model identities',
     );
   }
-  const evidence = attestedEvidence({ ...envelope, payload: { models: [...(payload.models as string[])].sort() } });
+  const models = [...(payload.models as string[])].sort();
+  // Membership is the meaning here and array order is encoding, so the evidence identity is taken
+  // over the canonical (sorted) inventory either way: the same set is the same evidence, and only the
+  // CLASS says whether a boundary actually vouched for it. An unvouched registry envelope is
+  // therefore exactly as strong as the same plain list — a claim, and recorded as one.
+  const evidence = resolveAttestationEvidence({ ...envelope, payload: { models } }, input.verifier);
   if (!evidence.ok) {
     return unresolved(
       'env.model_availability_attestation.payload',
       `the attested inventory is not canonicalizable evidence (${evidence.reason})`,
     );
   }
-  return { ok: true, models: [...(payload.models as string[])].sort(), evidence: evidence.evidence };
+  return { ok: true, models, evidence: evidence.evidence };
 }
 
 /**

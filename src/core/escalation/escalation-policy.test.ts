@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
@@ -82,15 +83,18 @@ function envelopeFor(
 ): RoleEnvelope {
   const resolved = resolveExecutionContract(contract, ENV);
   assert.ok(resolved.ok, 'fixture contract must resolve');
-  // Attested capability: a review that requires independence cannot rest on a raw claim (T2).
+  // Capability the environment's boundary vouched for: a review that requires independence cannot
+  // rest on a raw claim, and a submitted envelope nobody vouches for is only a claim (T2).
+  const attestation = {
+    source_kind: 'execution_adapter',
+    source: `pi-${resolved.contract.execution_target}`,
+    source_version: '0.1.0',
+    payload: { target: resolved.contract.execution_target, capabilities },
+  };
   const bound = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: `pi-${resolved.contract.execution_target}`,
-      source_version: '0.1.0',
-      payload: { target: resolved.contract.execution_target, capabilities },
-    },
+    capability_attestation: attestation,
+    capability_attestation_verifier: createAttestationVerifier([attestation]),
   });
   assert.ok(bound.ok, 'fixture contract must bind to its execution target');
   const compiled = compileBoundRoleEnvelope(bound.binding);

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
@@ -111,18 +112,21 @@ function resolved(contract: TaskContract): ExecutionContract {
 }
 
 /**
- * Bind on the STRONG path: attested capability traceable to an explicit adapter identity. A raw
- * claim cannot satisfy a hard capability requirement (T2), so envelope truth is evidenced here.
+ * Bind on the STRONG path: capability the environment's explicit boundary vouched for. A raw claim
+ * cannot satisfy a hard capability requirement (T2), and a submitted envelope nobody vouches for is
+ * only a claim — so envelope truth is evidenced here, through the boundary (W1_ATTESTATION_SELF_PROMOTION).
  */
 function bindToTarget(contract: ExecutionContract, capabilities: ExecutionTargetCapabilities): TargetBinding {
+  const attestation = {
+    source_kind: 'execution_adapter',
+    source: 'pi-target-fixture',
+    source_version: '0.1.0',
+    payload: { target: contract.execution_target as ExecutionTargetName, capabilities },
+  };
   const result: TargetBindingResult = bindExecutionTarget({
     execution_contract: contract,
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: 'pi-target-fixture',
-      source_version: '0.1.0',
-      payload: { target: contract.execution_target as ExecutionTargetName, capabilities },
-    },
+    capability_attestation: attestation,
+    capability_attestation_verifier: createAttestationVerifier([attestation]),
   });
   assert.equal(result.ok, true, `contract must bind: ${JSON.stringify(result)}`);
   return (result as { ok: true; binding: TargetBinding }).binding;

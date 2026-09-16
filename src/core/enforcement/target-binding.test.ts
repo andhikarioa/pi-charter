@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
@@ -83,26 +84,32 @@ function bind(contract: ExecutionContract, snapshot: unknown): TargetBindingResu
 }
 
 /**
- * Attested capability evidence for a target (T2). The identity names the evidence-producing adapter,
- * which is what makes the strong path distinguishable from a raw claim.
+ * Attested capability input for a target (T2): the submitted candidate, plus the boundary that
+ * vouches for what this environment issued (W1_ATTESTATION_SELF_PROMOTION). The source identity is
+ * what makes the strong path distinguishable from a raw claim — and the boundary is what makes the
+ * submitted envelope trusted at all.
  */
 function attested(
   capabilities: ExecutionTargetCapabilities,
   target: ExecutionTargetName,
-): Record<string, unknown> {
-  return {
+): { capability_attestation: unknown; capability_attestation_verifier: ReturnType<typeof createAttestationVerifier> } {
+  const attestation = {
     source_kind: 'execution_adapter',
     source: `pi-${target}`,
     source_version: '0.1.0',
     payload: { target, capabilities },
   };
+  return {
+    capability_attestation: attestation,
+    capability_attestation_verifier: createAttestationVerifier([attestation]),
+  };
 }
 
-/** Bind on the strong path. Only attested capability can ground `ENFORCED` (T2). */
+/** Bind on the strong path. Only capability a boundary vouched for can ground `ENFORCED` (T2). */
 function bindAttested(contract: ExecutionContract, capabilities: ExecutionTargetCapabilities): TargetBindingResult {
   return bindExecutionTarget({
     execution_contract: contract,
-    capability_attestation: attested(capabilities, contract.execution_target),
+    ...attested(capabilities, contract.execution_target),
   });
 }
 

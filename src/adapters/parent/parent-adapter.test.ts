@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../../core/attestation/attestation.ts';
 import { createAuthorityBinder } from '../../core/authority/binder.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { TaskContract } from '../../core/contracts/task-contract.ts';
@@ -58,6 +59,13 @@ const SUBAGENTS_ATTESTATION = {
   },
 };
 
+/**
+ * The environment's explicit attestation boundary (W1_ATTESTATION_SELF_PROMOTION): it vouches for
+ * exactly the attestations this environment issues. A submitted envelope, an admitted source kind,
+ * and a realistic adapter name are not trust — this capability is, and Charter never decides it.
+ */
+const ATTESTATION_VERIFIER = createAttestationVerifier([PARENT_ATTESTATION, SUBAGENTS_ATTESTATION]);
+
 function contractFor(name: string): ExecutionContract {
   const fixture = POSITIVE_CONTRACTS.find((p) => p.name === name);
   assert.ok(fixture, `missing positive fixture '${name}'`);
@@ -97,7 +105,11 @@ test('parent adapter — binds a parent contract without any subagents runtime',
   assert.notEqual(result.handoff.execution_contract, contract);
 
   // The strong path: attested capability, so the parent's real model-selection primitive is ENFORCED.
-  const attested = bindParentTarget({ execution_contract: contract, capability_attestation: PARENT_ATTESTATION });
+  const attested = bindParentTarget({
+    execution_contract: contract,
+    capability_attestation: PARENT_ATTESTATION,
+    capability_attestation_verifier: ATTESTATION_VERIFIER,
+  });
   assert.equal(attested.ok, true, JSON.stringify(attested.ok ? [] : attested.errors));
   if (!attested.ok) return;
   assert.equal(attested.handoff.capability_evidence.class, 'attested');
@@ -110,7 +122,11 @@ test('parent adapter — refuses a subagents contract instead of substituting th
   const contract = contractFor('subagents implement with independent review');
   // Attested capability that truthfully describes the subagents target: the core binds it, and it is
   // the adapter that must refuse rather than serve a target the contract did not select.
-  const result = bindParentTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
+  const result = bindParentTarget({
+    execution_contract: contract,
+    capability_attestation: SUBAGENTS_ATTESTATION,
+    capability_attestation_verifier: ATTESTATION_VERIFIER,
+  });
   assert.equal(result.ok, false);
   if (result.ok) return;
   assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['CONTRACT_CONTRADICTION']);

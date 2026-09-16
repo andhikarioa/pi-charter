@@ -9,6 +9,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
@@ -465,6 +466,13 @@ const SUBAGENTS_ATTESTATION = {
   payload: { target: 'subagents' as const, capabilities: SUBAGENTS_SNAPSHOT.capabilities },
 };
 
+/**
+ * The environment's explicit attestation boundary (W1_ATTESTATION_SELF_PROMOTION): the run below is
+ * wired with it, and the receipt is created from exactly the evidence that run was wired with, so
+ * the boundary is part of the evidence rather than a detail beside it.
+ */
+const ATTESTATION_VERIFIER = createAttestationVerifier([SUBAGENTS_ATTESTATION]);
+
 /** The attested twin of `runPipeline`: a review contract bound to attested subagents capability. */
 function runAttestedPipeline(): Run {
   const validated = validateTaskContract(REVIEW_CONTRACT, { authorityBinder: BINDER });
@@ -479,6 +487,7 @@ function runAttestedPipeline(): Run {
   const bound = bindExecutionTarget({
     execution_contract: resolved.contract,
     capability_attestation: SUBAGENTS_ATTESTATION,
+    capability_attestation_verifier: ATTESTATION_VERIFIER,
   });
   assert.ok(bound.ok, 'the attested review fixture must bind');
   const envelope = compileBoundRoleEnvelope(bound.binding);
@@ -491,6 +500,7 @@ function runAttestedPipeline(): Run {
       model_profile: PROFILE,
       available: AVAILABLE,
       capability_attestation: SUBAGENTS_ATTESTATION,
+      capability_attestation_verifier: ATTESTATION_VERIFIER,
       compiler_identity: COMPILER_IDENTITY,
       target_binding: bound.binding,
     },

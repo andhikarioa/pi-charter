@@ -8,7 +8,8 @@
  *
  * v0.1.1 Wave 1 truth rules:
  *
- *   ENFORCED        the capability is ATTESTED and an applicable canonical policy exists (T2, T3)
+ *   ENFORCED        the capability is ATTESTED by a candidate the supplied verifier vouched for, and
+ *                   an applicable canonical policy exists (T2, T3)
  *   INSTRUCTED      a policy applies, but the target cannot hard-enforce it (or nothing attests it)
  *   UNSUPPORTED     the target has no primitive for the dimension
  *   NOT_APPLICABLE  this contract declares no policy for the dimension: there is nothing to enforce
@@ -16,8 +17,11 @@
  *
  * A raw capability claim is not evidence (T2). `bindExecutionTargetFromClaim` binds it truthfully —
  * no constraint is ever reported `ENFORCED` from a claim — and the binding records the evidence
- * class, so a reader can see which of the two paths produced the truth. Strong enforcement comes
- * only from an attestation traceable to an explicit evidence source, validated fail-closed here.
+ * class, so a reader can see which path produced the truth. A submitted attestation is a CANDIDATE
+ * too: it is validated fail-closed, and its booleans reach the truth table only when the explicit
+ * `AttestationVerifier` this binding was wired with vouches for it
+ * (W1_ATTESTATION_SELF_PROMOTION). A candidate nobody vouches for is recorded as an unattested
+ * claim, so no source name, source kind, or envelope field can promote itself to `ENFORCED`.
  *
  * Everything here is pure and explicit: no clock, no randomness, no registry, no discovery, no
  * persistence. Charter does not execute the work, and it does not implement a primitive the
@@ -25,9 +29,10 @@
  */
 
 import {
-  attestedEvidence,
-  checkAttestationEnvelope,
+  checkAttestationCandidate,
   claimedEvidence,
+  resolveAttestationEvidence,
+  type AttestationVerifier,
   type EnvironmentEvidence,
 } from '../attestation/attestation.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
@@ -105,12 +110,18 @@ export interface ClaimTargetBindingInput {
   capability_claim: unknown;
 }
 
-/** A contract bound to capability ATTESTATION from an explicit evidence source. */
+/** A contract bound to a submitted capability ATTESTATION, which is a candidate until vouched for. */
 export interface AttestedTargetBindingInput {
   /** Phase 2 artifact. Its semantics are re-resolved nowhere and mutated nowhere. */
   execution_contract: ExecutionContract;
-  /** Attested capability evidence, traceable to an admitted evidence source. Validated fail-closed. */
+  /** Submitted capability attestation. Validated fail-closed, then trusted only by the verifier. */
   capability_attestation: unknown;
+  /**
+   * The explicit trusted-attestation boundary (W1_ATTESTATION_SELF_PROMOTION). A CAPABILITY the
+   * environment supplies, never a submitted value; without it the candidate is recorded as a claim
+   * and no constraint can be reported `ENFORCED`.
+   */
+  capability_attestation_verifier?: AttestationVerifier;
 }
 
 export type TargetBindingInput = ClaimTargetBindingInput | AttestedTargetBindingInput;
@@ -131,7 +142,12 @@ export interface TargetBinding {
 
 export type TargetBindingResult = { ok: true; binding: TargetBinding } | { ok: false; errors: CharterError[] };
 
-const BINDING_INPUT_KEYS = ['execution_contract', 'capability_claim', 'capability_attestation'] as const;
+const BINDING_INPUT_KEYS = [
+  'execution_contract',
+  'capability_claim',
+  'capability_attestation',
+  'capability_attestation_verifier',
+] as const;
 const CLAIM_KEYS = ['name', 'capabilities'] as const;
 const ATTESTED_PAYLOAD_KEYS = ['target', 'capabilities'] as const;
 const REQUIREMENTS_KEYS = ['enforcement'] as const;
@@ -216,6 +232,7 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
   }
   const hasClaim = raw.capability_claim !== undefined;
   const hasAttestation = raw.capability_attestation !== undefined;
+  const hasVerifier = raw.capability_attestation_verifier !== undefined;
   if (hasClaim && hasAttestation) {
     return {
       ok: false,
@@ -241,7 +258,22 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
       ],
     };
   }
-  // Both capability keys are admitted here so the exclusivity rule above is the single report.
+  // A boundary with nothing to verify is a contradiction rather than a silently ignored wiring: the
+  // verifier is only ever read on the channel it governs, so a claim can never be read as vouched for.
+  if (hasVerifier && !hasAttestation) {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'CONTRACT_CONTRADICTION',
+          path: 'capability_attestation_verifier',
+          message:
+            'capability_attestation_verifier is present with no capability_attestation to verify; a trust boundary is never supplied for a channel it does not govern',
+        },
+      ],
+    };
+  }
+  // Every capability key is admitted here so the rules above are the single report.
   checkUnknownKeys(raw, BINDING_INPUT_KEYS, '', err);
 
   const contract: unknown = raw.execution_contract;
@@ -255,7 +287,7 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
   }
   const target = contract.execution_target;
 
-  // Capability truth comes from one of two channels, and only one of them can be trusted.
+  // Capability truth comes from one of two channels, and neither is trusted by shape.
   let capabilities: ExecutionTargetCapabilities | undefined;
   let capabilityEvidence: EnvironmentEvidence | undefined;
   if (hasClaim) {
@@ -271,7 +303,21 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
       }
     }
   } else {
-    const attested = checkAttestation(raw.capability_attestation, target, err);
+    // The submitted attestation is a candidate: the verifier is the only thing that can make it
+    // trusted evidence, and only the verifier it is handed can say so (W1_ATTESTATION_SELF_PROMOTION).
+    let verifier: AttestationVerifier | undefined;
+    if (hasVerifier) {
+      if (typeof raw.capability_attestation_verifier !== 'function') {
+        err(
+          'INVALID_TASK_CONTRACT',
+          'capability_attestation_verifier',
+          'capability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+        );
+      } else {
+        verifier = raw.capability_attestation_verifier as AttestationVerifier;
+      }
+    }
+    const attested = checkCapabilityAttestationCandidate(raw.capability_attestation, target, verifier, err);
     if (attested !== undefined) {
       capabilities = attested.capabilities;
       capabilityEvidence = attested.evidence;
@@ -320,10 +366,13 @@ export function bindExecutionTargetFromClaim(input: ClaimTargetBindingInput): Ta
 }
 
 /**
- * Bind from attested capability evidence (the strong path). Only this path can report `ENFORCED`,
- * and only together with an applicable canonical policy.
+ * Bind from a submitted capability attestation (the strong channel). This path reports `ENFORCED`
+ * only for evidence the supplied verifier vouched for, and only together with an applicable
+ * canonical policy; an unvouched candidate is bound as the claim it is.
  */
-export function bindExecutionTargetFromAttestation(input: AttestedTargetBindingInput): TargetBindingResult {
+export function bindExecutionTargetFromAttestationCandidate(
+  input: AttestedTargetBindingInput,
+): TargetBindingResult {
   return bindExecutionTarget(input);
 }
 
@@ -361,17 +410,22 @@ function checkClaim(claim: unknown, target: ExecutionTargetName, err: Err): Capa
 }
 
 /**
- * Validate attested capability evidence fail-closed: an admitted source kind, a traceable source
- * identity, and a canonical payload naming this exact target with every axis stated.
+ * Validate a submitted capability attestation candidate fail-closed: an admitted source kind, a
+ * declared source identity, and a canonical payload naming this exact target with every axis stated.
+ *
+ * Validation settles the SHAPE. Capability truth settles on the verifier: the axes are returned only
+ * when the evidence the boundary produced is `attested`, so an unvouched candidate yields no trusted
+ * capability at all and no constraint can be reported `ENFORCED` from it.
  */
-function checkAttestation(
+function checkCapabilityAttestationCandidate(
   raw: unknown,
   target: ExecutionTargetName,
+  verifier: AttestationVerifier | undefined,
   err: Err,
-): { capabilities: ExecutionTargetCapabilities; evidence: EnvironmentEvidence } | undefined {
-  const envelope = checkAttestationEnvelope(raw, 'capability_attestation', 'execution_adapter', err);
-  if (envelope === undefined) return undefined;
-  const payload = envelope.payload;
+): { capabilities: ExecutionTargetCapabilities | undefined; evidence: EnvironmentEvidence } | undefined {
+  const candidate = checkAttestationCandidate(raw, 'capability_attestation', 'execution_adapter', err);
+  if (candidate === undefined) return undefined;
+  const payload = candidate.payload;
   if (!isRecord(payload)) {
     err('INVALID_TASK_CONTRACT', 'capability_attestation.payload', 'capability_attestation.payload must be an object');
     return undefined;
@@ -393,9 +447,9 @@ function checkAttestation(
     );
     return undefined;
   }
-  const capabilities = checkCapabilityAxes(payload.capabilities, 'capability_attestation.payload.capabilities', err);
-  if (capabilities === undefined) return undefined;
-  const evidence = attestedEvidence(envelope);
+  const axes = checkCapabilityAxes(payload.capabilities, 'capability_attestation.payload.capabilities', err);
+  if (axes === undefined) return undefined;
+  const evidence = resolveAttestationEvidence(candidate, verifier);
   if (!evidence.ok) {
     err(
       'INVALID_TASK_CONTRACT',
@@ -404,7 +458,11 @@ function checkAttestation(
     );
     return undefined;
   }
-  return { capabilities, evidence: evidence.evidence };
+  // The gate: these booleans are trusted capability only if the boundary vouched for the candidate.
+  return {
+    capabilities: evidence.evidence.class === 'attested' ? axes : undefined,
+    evidence: evidence.evidence,
+  };
 }
 
 /** Every axis must be stated explicitly as a boolean; a partial set is refused, never defaulted. */

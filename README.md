@@ -127,8 +127,10 @@ if (!resolved.ok) {
 
 // 4. Bind target capability truth
 //    `capability_claim` is the low-level CLAIM path: nothing is attested, so nothing is ENFORCED.
-//    Use `capability_attestation` (an envelope traceable to an execution adapter) when hard
-//    enforcement must be real.
+//    `capability_attestation` is the strong channel, but the submitted envelope is only a CANDIDATE:
+//    its capabilities become trusted only when `capability_attestation_verifier` — the code that says
+//    which attestations this environment issued, e.g. `createAttestationVerifier([...])` — vouches for
+//    it. Without that boundary the envelope is recorded as the claim it is, and nothing is ENFORCED.
 const capabilityClaim: CapabilityClaim = {
   name: 'parent',
   capabilities: {
@@ -396,7 +398,7 @@ const receipt = createResolutionReceipt({
   authority_binder: authorityBinder,
   assertion_binder: assertionBinder, // required when the contract declares assertions
   model_profile: profile,
-  available: available, // raw availability CLAIM; `model_availability_attestation` is the strong path
+  available: available, // raw availability CLAIM; `model_availability_attestation` + a verifier is the strong channel
   capability_claim: capabilityClaim,
   // Identity of the compiler artifact that ran this resolution. Required, and never a restatement of
   // `contract_version`; a missing or version-shaped value produces no receipt.

@@ -16,6 +16,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { bindSubagentsTarget } from '../../adapters/subagents/subagents-adapter.ts';
+import { createAttestationVerifier, type AttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
@@ -140,7 +141,9 @@ function runPipeline(contract: unknown, capability: CapabilityInput, env: Resolv
 }
 
 /** The capability evidence channel a run is bound with. Both are explicit and never blended. */
-export type CapabilityInput = { capability_claim: unknown } | { capability_attestation: unknown };
+export type CapabilityInput =
+  | { capability_claim: unknown }
+  | { capability_attestation: unknown; capability_attestation_verifier?: AttestationVerifier };
 
 /** A raw capability CLAIM: low-level, never attested, so nothing it says can be hard-enforced (T2). */
 function claimedClaim(claim: unknown): CapabilityInput {
@@ -148,20 +151,27 @@ function claimedClaim(claim: unknown): CapabilityInput {
 }
 
 /**
- * ATTESTED capability evidence from an explicit execution adapter (T2). Only this channel can ground
- * `ENFORCED`, and only together with an applicable canonical policy (T3).
+ * Attested capability input for a target (T2).
+ *
+ * The submitted candidate carries the adapter identity; the boundary is the code in which this
+ * environment states which attestation it actually issued, and only a candidate that IS that
+ * attestation is vouched for (W1_ATTESTATION_SELF_PROMOTION). Shape alone, and a source name alone,
+ * promote nothing. Only a vouched candidate can ground `ENFORCED`, and only with an applicable
+ * canonical policy (T3).
  */
 function attestedCapability(
   target: ExecutionTargetName,
   capabilities: ExecutionTargetCapabilities,
 ): CapabilityInput {
+  const attestation = {
+    source_kind: 'execution_adapter',
+    source: `pi-${target}`,
+    source_version: '0.1.0',
+    payload: { target, capabilities },
+  };
   return {
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: `pi-${target}`,
-      source_version: '0.1.0',
-      payload: { target, capabilities },
-    },
+    capability_attestation: attestation,
+    capability_attestation_verifier: createAttestationVerifier([attestation]),
   };
 }
 
@@ -925,12 +935,7 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assert.ok(resolved.ok, 'the review contract must resolve');
   const bound = bindSubagentsTarget({
     execution_contract: resolved.contract,
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: 'pi-subagents',
-      source_version: '0.1.0',
-      payload: { target: 'subagents', capabilities: SUBAGENTS_CAPABILITIES },
-    },
+    ...attestedCapability('subagents', SUBAGENTS_CAPABILITIES),
   });
   assert.ok(bound.ok, 'the subagents target must accept this contract');
   if (!bound.ok) return;
@@ -985,12 +990,7 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assert.equal(claimedBinding.ok, false, 'a raw claim cannot satisfy this contract\'s hard capability requirements');
   const coreBinding = bindExecutionTarget({
     execution_contract: resolved.contract,
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: 'pi-subagents',
-      source_version: '0.1.0',
-      payload: { target: 'subagents', capabilities: SUBAGENTS_CAPABILITIES },
-    },
+    ...attestedCapability('subagents', SUBAGENTS_CAPABILITIES),
   });
   assert.ok(coreBinding.ok);
   const envelope = compileBoundRoleEnvelope(coreBinding.binding);
@@ -1006,12 +1006,7 @@ test('P5-M subagents handoff: another target is refused, and an absent review re
   assert.ok(parentResolved.ok);
   const refused = bindSubagentsTarget({
     execution_contract: parentResolved.contract,
-    capability_attestation: {
-      source_kind: 'execution_adapter',
-      source: 'pi-parent',
-      source_version: '0.1.0',
-      payload: { target: 'parent', capabilities: PARENT_CAPABILITIES },
-    },
+    ...attestedCapability('parent', PARENT_CAPABILITIES),
   });
   assert.equal(refused.ok, false);
   assert.deepEqual(refused.ok === false ? codes(refused.errors) : [], ['CONTRACT_CONTRADICTION']);

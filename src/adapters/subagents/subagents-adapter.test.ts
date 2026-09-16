@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
+import { createAttestationVerifier } from '../../core/attestation/attestation.ts';
 import { createAuthorityBinder } from '../../core/authority/binder.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { TaskContract } from '../../core/contracts/task-contract.ts';
@@ -42,6 +43,13 @@ const SUBAGENTS_ATTESTATION = {
   payload: { target: 'subagents' as const, capabilities: SUBAGENTS_SNAPSHOT.capabilities },
 };
 
+/**
+ * The environment's explicit attestation boundary (W1_ATTESTATION_SELF_PROMOTION): it vouches for
+ * exactly the attestation this environment issues. The envelope below is a submitted candidate, and
+ * this capability is the only thing that makes it trusted; a realistic adapter name is not.
+ */
+const ATTESTATION_VERIFIER = createAttestationVerifier([SUBAGENTS_ATTESTATION]);
+
 function contractFor(name: string): ExecutionContract {
   const fixture = POSITIVE_CONTRACTS.find((p) => p.name === name);
   assert.ok(fixture, `missing positive fixture '${name}'`);
@@ -69,7 +77,11 @@ test('subagents adapter — translates bound truth into bounded handoff paramete
     false,
     'a raw claim must not satisfy the independent-review requirement',
   );
-  const result = bindSubagentsTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
+  const result = bindSubagentsTarget({
+    execution_contract: contract,
+    capability_attestation: SUBAGENTS_ATTESTATION,
+    capability_attestation_verifier: ATTESTATION_VERIFIER,
+  });
   assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
   if (!result.ok) return;
   const handoff = result.handoff;
@@ -134,7 +146,11 @@ test('subagents adapter — fails closed where the target cannot enforce what is
     // The requirement travels only inside the resolved contract — resolution carried it there.
     const contract = contractRequiring('subagents implement with independent review', requirements);
     assert.deepEqual(contract.requirements, requirements);
-    const result = bindSubagentsTarget({ execution_contract: contract, capability_attestation: SUBAGENTS_ATTESTATION });
+    const result = bindSubagentsTarget({
+      execution_contract: contract,
+      capability_attestation: SUBAGENTS_ATTESTATION,
+      capability_attestation_verifier: ATTESTATION_VERIFIER,
+    });
     assert.equal(result.ok, false, JSON.stringify(requirements));
     if (result.ok) return;
     assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['UNSUPPORTED_BY_EXECUTION_TARGET']);

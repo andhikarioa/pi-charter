@@ -20,7 +20,7 @@
  */
 
 import { resolveAssertionBindings, type AssertionBinding, type AssertionBinder } from '../acceptance/assertion-binding.ts';
-import type { EnvironmentEvidence } from '../attestation/attestation.ts';
+import type { EnvironmentEvidence, AttestationVerifier } from '../attestation/attestation.ts';
 import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import { TERMINAL_POLICY, type ExecutionContract } from '../contracts/execution-contract.ts';
@@ -57,6 +57,12 @@ export interface ResolverEnv {
   available?: readonly string[];
   /** Attested model inventory from an admitted registry source (H2). Exactly one of these two. */
   model_availability_attestation?: unknown;
+  /**
+   * The explicit trusted-attestation boundary for that inventory (W1_ATTESTATION_SELF_PROMOTION). A
+   * CAPABILITY the environment supplies, never a submitted value: with no verifier declared, the
+   * submitted envelope is recorded as a claim and never as attested registry truth.
+   */
+  model_availability_attestation_verifier?: AttestationVerifier;
 }
 
 export type ResolutionResult =
@@ -70,6 +76,7 @@ const RESOLVER_ENV_KEYS = [
   'profile',
   'available',
   'model_availability_attestation',
+  'model_availability_attestation_verifier',
 ] as const;
 
 /**
@@ -156,12 +163,15 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
   }
 
   // H2 — model availability comes from exactly one evidence channel, and the resolved contract
-  // records which one. An attestation is traceable to an admitted registry source; a raw list is
-  // recorded as a claim, never as attested inventory.
+  // records which one. A raw list is recorded as a claim, and a submitted registry envelope is a
+  // candidate: it is attested inventory only where the explicit boundary vouched for it.
   const availability = resolveModelAvailability({
     ...(env.available !== undefined ? { available: env.available } : {}),
     ...(env.model_availability_attestation !== undefined
       ? { attestation: env.model_availability_attestation }
+      : {}),
+    ...(env.model_availability_attestation_verifier !== undefined
+      ? { verifier: env.model_availability_attestation_verifier }
       : {}),
   });
   if (!availability.ok) return { ok: false, errors: [availability.error] };
@@ -276,6 +286,27 @@ function checkEnv(env: ResolverEnv): CharterError[] {
       code: 'INVALID_TASK_CONTRACT',
       path: 'env.correctionBinder',
       message: 'env.correctionBinder must carry both a findings binder and an acceptance binder',
+    });
+  }
+  // The trust boundary is a capability or it is absent. A data value here would be a submitted
+  // envelope trying to occupy the verifier's position, which is exactly the self-promotion this
+  // boundary exists to stop; a verifier with nothing to verify is a contradiction, not a no-op.
+  const availabilityVerifier: unknown = (env as { model_availability_attestation_verifier?: unknown })
+    .model_availability_attestation_verifier;
+  if (availabilityVerifier !== undefined && typeof availabilityVerifier !== 'function') {
+    errors.push({
+      code: 'INVALID_TASK_CONTRACT',
+      path: 'env.model_availability_attestation_verifier',
+      message:
+        'env.model_availability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+    });
+  }
+  if (availabilityVerifier !== undefined && env.model_availability_attestation === undefined) {
+    errors.push({
+      code: 'CONTRACT_CONTRADICTION',
+      path: 'env.model_availability_attestation_verifier',
+      message:
+        'env.model_availability_attestation_verifier is present with no attestation to verify; a trust boundary is never supplied for a channel it does not govern',
     });
   }
   return errors;

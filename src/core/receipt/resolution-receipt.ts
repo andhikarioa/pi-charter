@@ -58,7 +58,7 @@
  */
 
 import type { AssertionBinder } from '../acceptance/assertion-binding.ts';
-import { checkEnvironmentEvidence, type EnvironmentEvidence } from '../attestation/attestation.ts';
+import { checkEnvironmentEvidence, type AttestationVerifier, type EnvironmentEvidence } from '../attestation/attestation.ts';
 import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import {
@@ -159,10 +159,18 @@ export interface ResolutionReceiptInput {
   available?: readonly string[];
   /** The attested model inventory the resolution ran under (H2). Exactly one of these two. */
   model_availability_attestation?: unknown;
+  /**
+   * The explicit trusted-attestation boundary that run was wired with (W1_ATTESTATION_SELF_PROMOTION).
+   * A capability, never a submitted value. The same boundary must be supplied here for the recomputed
+   * evidence class to BE the one the run produced.
+   */
+  model_availability_attestation_verifier?: AttestationVerifier;
   /** The capability CLAIM the binding used, when it used one (T2). Exactly one of these two. */
   capability_claim?: unknown;
-  /** The capability ATTESTATION the binding used, when it used one (T2). */
+  /** The capability ATTESTATION candidate the binding used, when it used one (T2). */
   capability_attestation?: unknown;
+  /** The explicit trusted-attestation boundary the binding was wired with (T2). A capability. */
+  capability_attestation_verifier?: AttestationVerifier;
   /** Identity of the compiler artifact that ran this resolution (H1). Never `contract_version`. */
   compiler_identity: string;
   /** The Phase 3 artifact the caller claims this evidence produced. Compared, never trusted. */
@@ -181,8 +189,10 @@ const RECEIPT_INPUT_KEYS = [
   'model_profile',
   'available',
   'model_availability_attestation',
+  'model_availability_attestation_verifier',
   'capability_claim',
   'capability_attestation',
+  'capability_attestation_verifier',
   'compiler_identity',
   'target_binding',
 ] as const;
@@ -248,6 +258,12 @@ export function createResolutionReceipt(input: unknown): ResolutionReceiptResult
     ...(input.model_availability_attestation !== undefined
       ? { model_availability_attestation: input.model_availability_attestation }
       : {}),
+    ...(input.model_availability_attestation_verifier !== undefined
+      ? {
+          model_availability_attestation_verifier:
+            input.model_availability_attestation_verifier as AttestationVerifier,
+        }
+      : {}),
   });
   if (!resolved.ok) return { ok: false, errors: resolved.errors };
 
@@ -258,6 +274,9 @@ export function createResolutionReceipt(input: unknown): ResolutionReceiptResult
     ...(input.capability_attestation !== undefined
       ? { capability_attestation: input.capability_attestation }
       : { capability_claim: input.capability_claim }),
+    ...(input.capability_attestation_verifier !== undefined
+      ? { capability_attestation_verifier: input.capability_attestation_verifier as AttestationVerifier }
+      : {}),
   });
   if (!bound.ok) return { ok: false, errors: bound.errors };
 
