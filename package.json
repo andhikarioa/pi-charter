@@ -4,18 +4,34 @@
   "private": true,
   "description": "Deterministic, fail-closed governance compiler for bounded Pi work: contracts, routing, execution-target truth, role envelopes, and bounded next actions.",
   "type": "module",
-  "exports": {
-    ".": "./src/index.ts"
+  "engines": {
+    "node": ">=22.0.0"
   },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "!dist/**/*.test.js",
+    "!dist/**/*.test.d.ts",
+    "skills",
+    "compiler-identity.json",
+    "README.md"
+  ],
   "pi": {
     "skills": [
       "./skills"
     ]
   },
   "scripts": {
+    "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
-    "test": "node --test \"src/**/*.test.ts\"",
-    "verify": "npm run typecheck && npm test"
+    "test": "npm run build && node scripts/run-tests.mjs",
+    "verify": "npm run typecheck && npm test && npm pack --dry-run",
+    "prepack": "npm run build"
   },
   "devDependencies": {
     "@types/node": "^26.5.1",

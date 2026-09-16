@@ -48,3 +48,35 @@ export * from './adapters/parent/parent-adapter.ts';
 export * from './adapters/subagents/subagents-adapter.ts';
 export * from './core/escalation/escalation-policy.ts';
 export * from './core/receipt/resolution-receipt.ts';
+// v0.1.1 Wave 2 surface: post-execution conformance evidence, the one blessed composition facade,
+// and the minimum Pi-native bridge.
+//
+// Execution evidence is the second place trust enters Charter, and it is bounded the same way as the
+// first: an attestation is EVIDENCE only when a substrate/adaptor issuance boundary minted it, and
+// that boundary is recognised by process-local identity in a store the package never exports
+// (`core/execution/trusted-execution-boundary.ts`). This surface therefore admits the pure verifier
+// and the evidence vocabulary, and never `createExecutionAttestationIssuer` — a caller holds no way
+// to author trusted execution evidence through the package. A caller-authored object with the right
+// fields, a copy, a clone, and a JSON roundtrip all stay claims, which is exactly what
+// `verifyExecutionAttestation` reports as `UNTRUSTED_EXECUTION_EVIDENCE`.
+export {
+  ACCEPTANCE_EVIDENCE_STATUSES,
+  EXECUTION_ATTESTATION_VERSION,
+  EXECUTION_DEVIATION_CODES,
+  EXECUTION_VERDICTS,
+  verifyExecutionAttestation,
+} from './core/execution/execution-attestation.ts';
+export type {
+  AcceptanceEvidenceStatus,
+  AcceptanceVerification,
+  AssertionExecutionEvidence,
+  ExecutionAttestation,
+  ExecutionDeviation,
+  ExecutionDeviationCode,
+  ExecutionSubstrateIdentity,
+  ExecutionVerificationInput,
+  ExecutionVerificationResult,
+  ExecutionVerdict,
+} from './core/execution/execution-attestation.ts';
+export * from './core/compile/compile-for-target.ts';
+export * from './bridge/pi-bridge.ts';

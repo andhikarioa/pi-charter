@@ -21,7 +21,7 @@ Companion skill: bundled
 
 ### Installation & Repository Setup
 
-`pi-charter` is currently a private TypeScript library in this repository (`"private": true` in `package.json`), not published to the public npm registry. To build and consume it locally:
+`pi-charter` is a private, compiled package in this repository (`"private": true` in `package.json`), not published to the public npm registry. It ships `dist/` JavaScript plus type declarations, declares its supported Node runtime through `engines` (`>=22.0.0`), and exposes one entry point — the package root. No absolute source path and no `--experimental-strip-types` are involved in consuming it. To build and consume it locally:
 
 ```bash
 # Clone the repository
@@ -33,7 +33,11 @@ npm install
 npm run verify
 ```
 
-To consume `pi-charter` in another local project, configure it as a local path dependency:
+To consume `pi-charter` in another local project, configure it as a local path dependency and build it once:
+
+```bash
+cd ../pi-charter && npm run build   # emits dist/ and records the build identity
+```
 
 ```json
 {
@@ -43,128 +47,114 @@ To consume `pi-charter` in another local project, configure it as a local path d
 }
 ```
 
+```ts
+import { compileForTarget, verifyExecutionAttestation } from 'pi-charter';
+```
+
+Internal modules (the trust-boundary minter, the execution-evidence issuer, the canonical binding
+provenance store) are deliberately **not** exported. Only the package root is a supported import path.
+
 ### Minimal Usage Flow
 
-Author a `TaskContract`, bind authority, resolve routing and permissions, bind execution-target truth, and compile the `RoleEnvelope`:
+Author a `TaskContract`, then compile it with the one blessed facade. `compileForTarget` owns the
+canonical order — resolve → bind → compile envelope → render → hand off → receipt — so a caller never
+composes the pipeline from memory:
 
 ```ts
 import {
+  compileForTarget,
   createAuthorityBinder,
-  resolveExecutionContract,
-  bindExecutionTarget,
-  compileBoundRoleEnvelope,
-  renderRoleEnvelope,
-  type TaskContract,
+  createEvidenceBinder,
   type ModelProfile,
-  type CapabilityClaim,
+  type TaskContract,
 } from 'pi-charter';
 
 // 1. Author a bounded TaskContract
 const contract: TaskContract = {
   version: 'charter/v0.1',
-  task: {
-    id: 'fix-parser-bounds',
-    class: 'T2',
-    risk: 'medium',
-  },
+  task: { id: 'fix-parser-bounds', class: 'T2', risk: 'medium' },
   role: 'implement',
   execution_target: 'parent',
   root: '/absolute/project/root',
-  authority: {
-    sources: ['spec-doc'],
-  },
-  scope: {
-    files: ['src/parser.ts'],
-  },
-  permissions: {
-    code_write: true,
-    research: false,
-    external_write: false,
-    release: false,
-  },
-  acceptance: {
-    commands: ['npm test'],
-    review: {
-      required: true,
-      independence: 'none',
-      executor: 'same_session',
-    },
-  },
-  verification: {
-    level: 'V2',
-  },
-  limits: {
-    correction_rounds: 1,
-  },
+  authority: { sources: ['spec-doc'] },
+  scope: { files: ['src/parser.ts'] },
+  permissions: { code_write: true, research: false, external_write: false, release: false },
+  acceptance: { commands: ['npm test'] },
+  verification: { level: 'V2' },
+  limits: { correction_rounds: 1 },
   non_goals: ['refactoring ast types'],
 };
 
-// 2. Explicit authority binder & environment model profile
-const authorityBinder = createAuthorityBinder({
+// 2. Explicit environment inputs: authority evidence, model profile, model availability
+const authority_binder = createAuthorityBinder({
   'spec-doc': { path: 'docs/SPEC.md' },
 });
 
-const profile: ModelProfile = {
+const model_profile: ModelProfile = {
   workhorse: { preferred: 'claude-3-7-sonnet', fallback: ['claude-3-5-sonnet'] },
   reviewer: { preferred: 'gpt-4o', fallback: [] },
   reasoning: { preferred: 'o3-mini', fallback: [] },
 };
 
-const available = ['claude-3-7-sonnet', 'gpt-4o', 'o3-mini'];
-
-// 3. Resolve ExecutionContract (fail-closed on contradiction or unmapped authority)
-const resolved = resolveExecutionContract(contract, {
-  authorityBinder,
-  profile,
-  available,
-});
-
-if (!resolved.ok) {
-  console.error('Resolution refused:', resolved.errors);
-  process.exitCode = 1;
-  throw new Error('Resolution failed closed');
-}
-
-// 4. Bind target capability truth
-//    `capability_claim` is the low-level CLAIM path: nothing is attested, so nothing is ENFORCED.
-//    `capability_attestation` is the strong channel, but the submitted envelope is only a CANDIDATE:
-//    its capabilities become trusted only when `capability_attestation_verifier` — the code that says
-//    which attestations this environment issued, e.g. `createAttestationVerifier([...])` — vouches for
-//    it. Without that boundary the envelope is recorded as the claim it is, and nothing is ENFORCED.
-const capabilityClaim: CapabilityClaim = {
-  name: 'parent',
-  capabilities: {
-    model_selection: true,
-    fresh_session: false,
-    tool_ceiling: false,
-    file_scope_enforcement: false,
-    independent_review: false,
+const result = compileForTarget({
+  task_contract: contract,
+  authority_binder,
+  model_profile,
+  // A raw list is a CLAIM: it is recorded as one and can never ground attested registry truth.
+  // The strong channel is `model_availability_attestation` plus a trusted `AttestationVerifier`.
+  available: ['claude-3-7-sonnet', 'gpt-4o', 'o3-mini'],
+  // Same rule for target capabilities: `capability_claim` is a claim and can never produce ENFORCED.
+  // `capability_attestation` + `capability_attestation_verifier` is the attested channel.
+  capability_claim: {
+    name: 'parent',
+    capabilities: {
+      model_selection: true,
+      fresh_session: false,
+      tool_ceiling: false,
+      file_scope_enforcement: false,
+      independent_review: false,
+    },
   },
-};
-
-const binding = bindExecutionTarget({
-  execution_contract: resolved.contract,
-  capability_claim: capabilityClaim,
 });
 
-if (!binding.ok) {
-  console.error('Binding refused:', binding.errors);
+if (!result.ok) {
+  console.error('Compilation refused:', result.errors);
   process.exitCode = 1;
-  throw new Error('Target binding failed closed');
+  throw new Error('Compilation failed closed');
 }
 
-// 5. Compile RoleEnvelope instructions
-const compiled = compileBoundRoleEnvelope(binding.binding);
+const {
+  execution_contract,      // Phase 2: what was resolved
+  target_binding,          // Phase 3: what the target can actually enforce, and on what evidence
+  role_envelope,           // Phase 4: the instruction artifact
+  rendered_role_envelope,  // Phase 4: that artifact as deterministic prompt text
+  target_handoff,          // the target adapter's handoff — a separate artifact, never an envelope input
+  resolution_receipt,      // Phase 5: the evidence of this compilation, with the real build identity
+} = result.compiled;
 
-if (!compiled.ok) {
-  console.error('RoleEnvelope compilation refused:', compiled.errors);
-  process.exitCode = 1;
-  throw new Error('RoleEnvelope compilation failed closed');
-}
+console.log(rendered_role_envelope);
+```
 
-// 6. Render envelope instructions for executor prompt
-const promptText = renderRoleEnvelope(compiled.envelope);
-console.log(promptText);
+Why the facade and not the five low-level calls: `target_binding` is the only value that carries
+canonical process-local binding provenance, and it is the only value `compileBoundRoleEnvelope`
+accepts. A hand-built, copied, cloned, or JSON-roundtripped binding compiles **nothing** — that is
+the composition mistake the facade exists to make unreachable. Low-level functions remain public for
+advanced and internal use; see the companion skill's `library-usage` reference.
+
+From Pi itself, prefer the bridge, which derives the environment evidence for you:
+
+```ts
+import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
+
+const compiled = compileViaPi({ task_contract: contract, authority_binder, model_profile });
+if (!compiled.ok) throw new Error('Compilation refused');
+
+// After the work ran, check what this session actually did against what was compiled.
+const verified = verifyExecutionViaPi({
+  resolution_receipt: compiled.compiled.resolution_receipt,
+  role_envelope: compiled.compiled.role_envelope,
+  execution_contract: compiled.compiled.execution_contract,
+});
 ```
 
 ### Fail-Closed Principle
@@ -172,14 +162,9 @@ console.log(promptText);
 When resolution or target binding returns `!ok`, stop. Inspect the structured errors:
 
 ```ts
-const resolved = resolveExecutionContract(contract, {
-  authorityBinder,
-  profile,
-  available,
-});
-
-if (!resolved.ok) {
-  console.error(resolved.errors);
+const result = compileForTarget({ task_contract: contract, authority_binder, model_profile, available });
+if (!result.ok) {
+  console.error(result.errors); // exact code + path + message, never a heuristic
   process.exitCode = 1;
   return;
 }
@@ -400,9 +385,11 @@ const receipt = createResolutionReceipt({
   model_profile: profile,
   available: available, // raw availability CLAIM; `model_availability_attestation` + a verifier is the strong channel
   capability_claim: capabilityClaim,
-  // Identity of the compiler artifact that ran this resolution. Required, and never a restatement of
-  // `contract_version`; a missing or version-shaped value produces no receipt.
-  compiler_identity: 'pi-charter-build:2026-01-01',
+  // Identity of the compiler artifact that ran this resolution. `compileForTarget` supplies this for
+  // you: it is `sha256:<digest>` over the compiled `dist/` artifact set that `npm run build` emitted,
+  // so the same build always has the same identity and a changed artifact always has a different one.
+  // A missing or version-shaped value produces no receipt, and no identity is ever fabricated.
+  compiler_identity: compilerIdentity,
   target_binding: binding.binding,
 });
 ```
@@ -411,6 +398,48 @@ Receipt properties:
 - **Evidence-Only**: Emitted only when input evidence coherence is verified against the canonical pipeline.
 - **Deterministic**: Every identity is a SHA-256 hash over canonically serialized evidence.
 - **No Persistence**: Receipts are not workflow state, run history, or resumption tokens. Charter does not store or manage them.
+
+### Receipt ≠ Execution Attestation
+
+A receipt proves what was **compiled**. It says nothing about what actually ran, because Charter
+executes nothing. Execution evidence is a separate artifact, and it comes from the substrate:
+
+```text
+Charter compiles governance  →  the substrate executes  →  the substrate emits execution evidence
+                                                            →  Charter verifies conformance
+```
+
+```ts
+import { verifyExecutionAttestation } from 'pi-charter';
+
+const verification = verifyExecutionAttestation({
+  execution_attestation,      // issued by a substrate/adaptor issuance boundary — see below
+  resolution_receipt: compiled.compiled.resolution_receipt,
+  role_envelope: compiled.compiled.role_envelope,
+  execution_contract: compiled.compiled.execution_contract,
+});
+```
+
+The result is exact, never a score:
+
+- `EXECUTION_CONFORMANT`, or `NON_CONFORMANT` with the exact deviations
+  (`MODEL_MISMATCH`, `EXECUTION_TARGET_MISMATCH`, `RESOLUTION_RECEIPT_MISMATCH`,
+  `EXECUTION_CONTRACT_MISMATCH`, `ROLE_ENVELOPE_MISMATCH`, `FRESH_SESSION_NOT_EVIDENCED`,
+  `TOOL_POLICY_NOT_EVIDENCED`, `TOOL_POLICY_VIOLATION`, `ENFORCEMENT_NOT_EVIDENCED`,
+  `UNTRUSTED_EXECUTION_EVIDENCE`).
+- A separate acceptance result: `ACCEPTANCE_VERIFIED`, `ACCEPTANCE_NOT_VERIFIED`, or
+  `ACCEPTANCE_NOT_DECLARED`. A bound assertion is `ASSERTION_BOUND` until evidence shows the exact
+  bound verifier ran and passed for that reference — a different verifier's success, a reported
+  failure, and silence are all NOT VERIFIED.
+- Only dimensions the contract requires are demanded: no tool policy means no tool evidence, no
+  declared assertions means no verifier outcomes, no `required` enforcement means no enforcement
+  evidence.
+
+Evidence is issued, not asserted: only an attestation minted by an execution-attestation boundary in
+the same process is accepted, so a caller-authored object with the right fields — a copy, a clone, a
+JSON roundtrip — is refused as `UNTRUSTED_EXECUTION_EVIDENCE`. The Pi bridge issues that evidence for
+the session it runs in; an integration that owns a subagents runtime issues it through its own
+adapter. Charter stores no session, run, or workflow state to remember it.
 
 ---
 
@@ -442,14 +471,23 @@ npm run typecheck
 # Run test suite
 npm test
 
-# Run typecheck and full regression test suite
+# Compile the package to dist/ and record its build identity
+npm run build
+
+# Run typecheck, the compiled test suite, and the package dry-run
 npm run verify
 
 # Verify package contents (dry-run)
 npm pack --dry-run
 ```
 
-Current test suite baseline: **172 tests, 172 PASS**.
+`npm test` compiles the package and then runs the emitted JavaScript tests, so the official path never
+depends on a runtime that happens to execute TypeScript. Supported Node: `engines.node` = `>=22.0.0`.
+The identity a receipt commits to is the digest of the `dist/` artifact set that `npm run build`
+emitted, so a rebuild of unchanged artifacts gives the same identity and any material artifact change
+gives a different one.
+
+Current test suite baseline: **236 tests, 236 PASS**.
 
 ---
 

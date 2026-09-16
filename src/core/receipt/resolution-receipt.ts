@@ -36,9 +36,9 @@
  *
  * Compiler identity boundary (v0.1.1 H1): Wave 1 requires the identity field, validates that it is
  * not merely a restatement of the product version, and commits it to the receipt identity. It does
- * NOT invent a build digest or a Git-derived identity: the deterministic packaged/build identity is
- * supplied by the compiler artifact that actually runs resolution (Wave 2), and a caller that
- * supplies nothing gets no receipt rather than a fabricated attestation.
+ * NOT invent a build digest or a Git-derived identity: the deterministic identity of the compiled
+ * artifact set is recorded by `npm run build` and read by `compileForTarget`, which supplies it here.
+ * A caller that supplies nothing gets no receipt rather than a fabricated attestation.
  *
  * Emission is optional. Nothing in Charter emits a receipt automatically and nothing consumes one:
  * a caller that wants a receipt asks for one, and a caller that never asks is unaffected. The value

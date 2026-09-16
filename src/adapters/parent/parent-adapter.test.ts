@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { createAttestationVerifier } from '../../core/attestation/attestation.ts';
@@ -155,8 +155,16 @@ test('parent adapter — refuses what the parent target cannot enforce', () => {
 
 test('parent adapter — depends on the Phase 3 core only, and no other adapter or runtime', () => {
   // Static architectural guard: the parent target must work with zero subagents dependency.
-  const source = readFileSync(new URL('./parent-adapter.ts', import.meta.url), 'utf8');
-  const sources: string[] = [...source.matchAll(/from '([^']+)'/g)].flatMap((match) =>
+  const source = readFileSync(
+    new URL(
+      existsSync(new URL('./parent-adapter.ts', import.meta.url))
+        ? './parent-adapter.ts'
+        : './parent-adapter.js',
+      import.meta.url,
+    ),
+    'utf8',
+  );
+  const sources: string[] = [...source.matchAll(/from ["']([^"']+)["']/g)].flatMap((match) =>
     match[1] === undefined ? [] : [match[1]],
   );
   assert.ok(sources.length > 0, 'the adapter must import the core binding it uses');

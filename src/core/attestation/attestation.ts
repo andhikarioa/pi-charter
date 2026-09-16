@@ -21,9 +21,11 @@
  * candidate the boundary vouched for grounds `attested` evidence. An unknown source kind still fails
  * closed.
  *
- * Wave 1 defines this schema, its identity requirements, and the verification boundary. Issuing
- * attestations from real Pi/subagents/provider evidence is Wave 2 work: nothing here reads the
- * environment, and there is no signing infrastructure and no remote attestation service.
+ * Wave 1 defines this schema, its identity requirements, and the verification boundary. Wave 2 adds
+ * the production issuance behind that boundary: the Pi bridge (`bridge/pi-bridge.ts`) issues the
+ * model-registry evidence it actually observes, and records anything it cannot observe as a claim.
+ * Nothing in this module reads the environment, and there is no signing infrastructure and no remote
+ * attestation service.
  */
 
 import type { CharterErrorCode } from '../contracts/errors.ts';
@@ -68,8 +70,8 @@ export interface AttestationCandidate {
  *
  * `vouches` answers true only for a candidate this environment actually issued. A false answer, an
  * absent boundary, and a boundary that throws all refuse alike, so an unusable boundary fails closed
- * instead of trusting. Wave 2 supplies the real Pi/subagents issuer behind this position; until then
- * no production path mints one.
+ * instead of trusting. Wave 2 supplies the production issuer behind this position (the Pi bridge, for
+ * the evidence it actually observes); an integration that owns another runtime issues its own.
  */
 export interface AttestationVerifier {
   /** True only for a candidate this environment actually issued. Never a submitted value's contents. */

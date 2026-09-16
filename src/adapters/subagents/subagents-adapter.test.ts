@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
 import { createAttestationVerifier } from '../../core/attestation/attestation.ts';
@@ -167,10 +167,18 @@ test('subagents adapter — fails closed where the target cannot enforce what is
 });
 
 test('subagents adapter — owns no child lifecycle and imports no runtime bridge', () => {
-  const source = readFileSync(new URL('./subagents-adapter.ts', import.meta.url), 'utf8');
+  const source = readFileSync(
+    new URL(
+      existsSync(new URL('./subagents-adapter.ts', import.meta.url))
+        ? './subagents-adapter.ts'
+        : './subagents-adapter.js',
+      import.meta.url,
+    ),
+    'utf8',
+  );
   // No pi-subagents API is assumed: there is no authorized runtime bridge in this repository, so
   // the adapter is the pure Charter-side translation boundary and nothing more.
-  const sources: string[] = [...source.matchAll(/from '([^']+)'/g)].flatMap((match) =>
+  const sources: string[] = [...source.matchAll(/from ["']([^"']+)["']/g)].flatMap((match) =>
     match[1] === undefined ? [] : [match[1]],
   );
   assert.ok(sources.length > 0, 'the adapter must import the core truth it translates');

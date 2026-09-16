@@ -25,11 +25,23 @@ session, queue, or lifecycle state. It is not an orchestrator, scheduler, or wor
 
 ## v0.1 usage limitation — read first
 
-pi-charter v0.1 ships as a **TypeScript library / pure governance compiler surface** (the exports of
-`src/index.ts`). There is **no CLI, no Pi extension, no `/charter` command, and no `charter(...)`
-tool**. This skill teaches correct adoption and interpretation; it does not execute Charter, and it
-cannot produce governance artifacts on its own. If ergonomic direct invocation is later needed, that
-is separate evidence for a thin integration tool — do not assume one exists.
+pi-charter v0.1 ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported
+entry point) and a pure governance compiler surface. There is **no CLI, no Pi extension, no
+`/charter` command, and no `charter(...)` tool**. This skill teaches correct adoption and
+interpretation; it does not execute Charter, and it cannot produce governance artifacts on its own.
+
+Two supported ways to invoke it:
+
+```text
+compileForTarget          the one blessed facade — use it from a host integration
+compileViaPi / verifyExecutionViaPi
+                          the Pi-native bridge — use it from inside Pi; it derives the environment
+                          evidence itself and mediates the active parent session only
+```
+
+Low-level functions (`resolveExecutionContract`, `bindExecutionTarget`,
+`compileBoundRoleEnvelope`, …) remain public for advanced and internal use. Do **not** compose them
+by hand when the facade covers the need, and never feed a target handoff into envelope compilation.
 
 ## When to use Charter
 
@@ -185,7 +197,7 @@ must be evidenced, never assumed.
 
 | Need | Read |
 |------|------|
-| Invoke the TypeScript library correctly | `references/library-usage.md` |
+| Invoke the library correctly (facade first, bridge from Pi, evidence rules) | `references/library-usage.md` |
 | Construct a TaskContract | `references/contract-authoring.md` |
 | Choose/understand role or target | `references/roles-and-targets.md` |
 | Interpret refusal / next action | `references/refusals-and-next-actions.md` |
@@ -201,7 +213,7 @@ Charter core owns, and this skill must never restate as its own decision procedu
 ```text
 model fallback algorithm · monotonic narrowing · enforcement truth evaluation
 scope subset logic · authority binding · escalation counters · receipt hashing
-target capability validation
+target capability validation · execution-attestation conformance
 ```
 
 Use the pi-charter core result as truth. The skill may explain what a result means; it may not
