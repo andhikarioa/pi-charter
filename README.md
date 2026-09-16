@@ -144,7 +144,8 @@ advanced and internal use; see the companion skill's `library-usage` reference.
 From Pi itself, prefer the bundled Pi integration. Pi discovers the package's extension and exposes
 two tools — `charter_compile` and `charter_verify_execution` — that observe the live session and hand
 out no trust to the caller. The library bridge below does the same thing when you are already writing
-TypeScript inside the Pi process:
+TypeScript inside the Pi process; `compileDelegation` compiles bounded delegation authority for a
+subagents target without claiming anything about a child runtime:
 
 ```ts
 import { compileViaPi, observeExecutionViaPi, verifyExecutionViaPi } from 'pi-charter';
@@ -288,7 +289,7 @@ Charter supports exactly two execution targets in v0.1:
 The current parent Pi session acts as the executor. This is a first-class execution target—subagents and multi-session tools are not required.
 
 ### `subagents`
-A thin handoff target for delegated execution. Charter translates resolved truth into bounded handoff parameters (`model`, `fresh_session_required`, `enforcement`).
+A thin handoff target for delegated execution. Charter translates resolved truth into bounded handoff parameters (`model`, `fresh_session_required`, `enforcement`). `fresh_session_required` and the delegation handoff's `fresh_context` are one dispatch freshness truth — the operator's requirement OR the contract's out-of-session review requirement — so they never contradict.
 
 Charter itself does **not**:
 - spawn or terminate child sessions;
@@ -336,20 +337,29 @@ Review independence is bounded by target capability truth:
 ```
 
 The bundled extension is the Pi-native surface: Pi loads it, and it registers `charter_compile` and
-`charter_verify_execution`. `charter_compile` compiles a bounded contract for the active session and
-returns the execution handle for the exact artifact set it admitted; `charter_verify_execution`
-verifies an OBSERVED run against that admission only — Pi reports every tool execution in the
-session, and that observation is what makes the admitted artifact set a run. Neither tool accepts
-capability booleans, a model inventory, a trust boundary, or a caller-chosen compiler identity, and
-neither can mint trust.
+`charter_verify_execution`. `charter_compile` takes normal operator intent (task, role, target,
+authority document, scope, fresh, gates) and normalizes it into the strict canonical contract — or an
+advanced `task_contract` + `authority_evidence` (the sealed v0.1.1 `task_contract` + `authority`
+evidence object remains accepted). For `target=parent` it admits the exact artifact set
+and returns the execution handle; for `target=subagents` it compiles bounded delegation authority and
+returns a `HANDOFF_READY` handoff with the weaker truth stated plainly (`runtime_attested: false`,
+`execution_proof: UNAVAILABLE`, `routing.truth: REQUIREMENT_ONLY`, no capability attested, no execution
+handle). `charter_verify_execution` verifies an OBSERVED run of this session against a parent
+admission only — Pi reports every tool execution in the session, and that observation is what makes
+the admitted artifact set a run. Neither tool accepts capability booleans, a model inventory, a trust
+boundary, or a caller-chosen compiler identity, and neither can mint trust.
 
 The companion skill provides operator and agent adoption guidance:
 - When to apply Charter governance to non-trivial tasks.
-- How to author valid `TaskContract` specifications.
-- How to interpret compiler refusals and structured error codes.
+- How to state normal intent and compile it with one tool call, with archaeology off by default.
+- How to read a result's four truths: authority, handoff, runtime attestation, execution proof.
+- How to interpret compiler refusals, retryability, and remedies.
 - How to consume compiled `RoleEnvelope` instructions.
 
-The skill is reference-first: use the minimum relevant bundled reference and stop when it is sufficient; drop into core source only for an evidenced gap or explicit API/source verification. Shipped implementation remains the higher authority.
+The skill is tool-first: `charter_compile` is the authoring and compile surface, and bundled
+references are for interpreting a result or resolving an evidenced blocker — not for archaeology
+before the first call. Source and declarations are dropped into only for an evidenced gap or explicit
+API/source verification. Shipped implementation remains the higher authority.
 
 > **Key Rule**: The skill does not broaden what core permits. Core Charter remains the sole deterministic governance authority.
 

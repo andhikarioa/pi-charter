@@ -859,3 +859,57 @@ test('A10 — the host authority and the raw trust minters are not on the packag
   // The one adapter operation that IS public is the ordinary, untrusted one.
   assert.equal(typeof charter.createAdapterIntegration, 'function');
 });
+
+// ── CN0 — the simple parent request preserves the v0.1.1 parent path ────────
+
+/**
+ * The v0.1.2 simple surface must not become a second, weaker parent path. A simple `target=parent`
+ * request normalizes into a canonical contract and then goes through exactly the machinery the
+ * advanced path uses: the host-authorized integration observes this runtime, admits the artifact set,
+ * and returns the execution handle that verification requires. No handle here would mean the simple
+ * path silently lost execution verification.
+ */
+test('CN0 — a simple parent request compiles through the same admission the advanced path uses', async () => {
+  const { mkdtempSync, writeFileSync, rmSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { normalizeOperatorRequest } = await import('../operator/operator-request.ts');
+
+  const root = mkdtempSync(join(tmpdir(), 'pi-charter-simple-parent-'));
+  try {
+    writeFileSync(join(root, 'PLAN.md'), '# Plan\n\nBounded change.\n', 'utf8');
+    const normalized = normalizeOperatorRequest(
+      {
+        task: 'implement bounded change',
+        role: 'implement',
+        target: 'parent',
+        authority: 'PLAN.md',
+        scope: ['src/**'],
+        gates: ['npm test'],
+      },
+      { cwd: root },
+    );
+    assert.equal(normalized.ok, true, JSON.stringify(normalized.ok ? [] : normalized.errors));
+    if (!normalized.ok) return;
+
+    const adapter = hostAdapter();
+    const compiled = adapter.compile({
+      task_contract: normalized.request.task_contract,
+      authority_binder: normalized.request.authority_binder,
+      model_profile: PROFILE,
+    });
+    assert.equal(compiled.ok, true, JSON.stringify(compiled.ok ? [] : compiled.errors));
+    if (!compiled.ok) return;
+
+    // The parent path is unchanged: observed model evidence, an admission handle, and a session that
+    // must actually run the work before verification is possible.
+    assert.equal(compiled.compiled.execution_contract.execution_target, 'parent');
+    assert.equal(compiled.compiled.execution_contract.model.resolved, MODEL);
+    assert.equal(compiled.compiled.resolution_receipt.model_availability_evidence.class, 'attested');
+    assert.equal(typeof compiled.execution_handle, 'string');
+    const premature = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
+    assert.equal(premature.ok, false, 'admission still is not execution on the simple path');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});

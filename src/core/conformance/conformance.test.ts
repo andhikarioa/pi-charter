@@ -959,6 +959,16 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   assert.deepEqual(handoff.allowed_tools, REVIEW_SUBAGENTS.execution_policy?.allowed_tools);
   assert.equal(handoff.capability_evidence.class, 'attested');
 
+  // The bounded authority a dispatcher needs crosses as values: the declared root scope, permissions,
+  // acceptance commands, authority identity, and the routing REQUIREMENT (never child-model proof).
+  assert.deepEqual(handoff.scope, resolved.contract.scope);
+  assert.deepEqual(handoff.permissions, resolved.contract.permissions);
+  // No acceptance commands are declared by this contract: the list is empty, not carried prose.
+  assert.deepEqual(handoff.acceptance_commands, []);
+  assert.deepEqual(handoff.authority.bound_sources, resolved.contract.authority.bound_sources);
+  assert.deepEqual(handoff.authority.provenance, resolved.contract.authority.provenance);
+  assert.deepEqual(handoff.routing, { tier: 'reviewer', truth: 'REQUIREMENT_ONLY' });
+
   // The resolved ExecutionContract crosses unchanged, as a value rather than a handle.
   assert.deepEqual(handoff.execution_contract, resolved.contract);
   assert.notEqual(handoff.execution_contract, resolved.contract);
@@ -966,13 +976,18 @@ test('P5-M subagents handoff: validate → resolve → bindSubagentsTarget hands
   // The handoff surface is exactly these fields: no role envelope rides in it, and no runtime bridge,
   // child, session, or lifecycle handle exists to cross.
   assert.deepEqual(Object.keys(handoff).sort(), [
+    'acceptance_commands',
     'allowed_tools',
+    'authority',
     'capability_evidence',
     'enforcement',
     'execution_contract',
     'fresh_session_required',
     'model',
+    'permissions',
     'role',
+    'routing',
+    'scope',
     'target',
   ]);
   for (const field of ['envelope', 'role_envelope', 'prompt', 'child', 'child_id', 'session', 'session_id', 'worker', 'worker_id', 'spawn', 'retry', 'recovery']) {

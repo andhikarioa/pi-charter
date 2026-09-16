@@ -16,6 +16,10 @@
  *   P6  the trusted model evidence is the provider/model the context actually reported
  *   P7  no capability the extension cannot observe is attested
  *   P10 the extension owns no scheduling, session lifecycle, or persistence
+ *   P11 the canonical delegation flow (v0.1.2 CN6): ONE charter_compile from normal intent produces
+ *       HANDOFF_READY with weaker truth — no source archaeology, no handle, no child claim
+ *   P12 the released v0.1.1 advanced invocation (task_contract + an authority evidence object) still
+ *       compiles: the extension translates it before the strict schema validates (F2)
  *
  * Usage: node scripts/pi-integration-smoke.mjs
  */
@@ -108,6 +112,7 @@ const OBSERVED = { provider: 'smoke-provider', model: 'smoke-model', session: 's
 const context = {
   model: { provider: OBSERVED.provider, id: OBSERVED.model },
   sessionManager: { getSessionId: () => OBSERVED.session },
+  cwd: ROOT,
 };
 
 const taskContract = {
@@ -130,7 +135,7 @@ const execute = (name, params) => executeIn(name, params, context);
 
 const compiled = await execute('charter_compile', {
   task_contract: taskContract,
-  authority: { source: 'smoke-spec', doc: 'SMOKE-SPEC.md', revision: '1' },
+  authority_evidence: { source: 'smoke-spec', doc: 'SMOKE-SPEC.md', revision: '1' },
 });
 assert(compiled.details.ok === true, `charter_compile refused: ${compiled.content[0].text}`);
 assert(typeof compiled.details.execution_handle === 'string' && compiled.details.execution_handle.length >= 32, 'compile must return the admission handle');
@@ -166,6 +171,7 @@ console.log('pi integration smoke: observed execution verified EXECUTION_CONFORM
 const otherSession = {
   model: { provider: OBSERVED.provider, id: OBSERVED.model },
   sessionManager: { getSessionId: () => 'smoke-session-2' },
+  cwd: ROOT,
 };
 const mismatched = await executeIn('charter_verify_execution', { execution_handle: compiled.details.execution_handle }, otherSession);
 assert(mismatched.details.ok !== true, 'execution evidence binds the session the run was observed in');
@@ -181,6 +187,134 @@ assert(forged.content[0].text.includes('refused'), 'the refusal must be explicit
 const noHandle = await execute('charter_verify_execution', {});
 assert(noHandle.details.ok !== true, 'verification without a handle must be refused');
 console.log('pi integration smoke: unbound handles refused');
+
+// ── P12 — the released v0.1.1 advanced invocation is preserved (F2) ───────
+
+const compileDefinition = tools.get('charter_compile').definition;
+assert(
+  compileDefinition.parameters?.properties?.authority?.type === 'string',
+  'the public schema keeps `authority` strict (a string) for the simple path',
+);
+assert(
+  typeof compileDefinition.prepareArguments === 'function',
+  'the extension must translate the v0.1.1 evidence object before schema validation',
+);
+const legacyParams = {
+  task_contract: taskContract,
+  authority: { source: 'smoke-spec', doc: 'SMOKE-SPEC.md', revision: '1' },
+};
+const preparedArgs = compileDefinition.prepareArguments(legacyParams);
+assert(
+  preparedArgs.authority === undefined && preparedArgs.authority_evidence !== undefined,
+  'the legacy `authority` evidence object must become `authority_evidence` before validation',
+);
+let bothRefused = false;
+try {
+  compileDefinition.prepareArguments({
+    ...legacyParams,
+    authority_evidence: { source: 'smoke-spec', doc: 'SMOKE-SPEC.md' },
+  });
+} catch (error) {
+  bothRefused = /both present/.test(String(error instanceof Error ? error.message : error));
+}
+assert(bothRefused, 'stating both evidence spellings must be refused, never silently reduced to one');
+const legacyContext = {
+  model: { provider: OBSERVED.provider, id: OBSERVED.model },
+  sessionManager: { getSessionId: () => 'smoke-session-legacy' },
+  cwd: ROOT,
+};
+const legacy = await executeIn('charter_compile', preparedArgs, legacyContext);
+assert(legacy.details.ok === true, `the v0.1.1 advanced invocation must still compile: ${legacy.content[0].text}`);
+assert(
+  typeof legacy.details.execution_handle === 'string' && legacy.details.execution_handle.length >= 32,
+  'the legacy invocation must admit the parent artifact set exactly as the sealed release did',
+);
+console.log('pi integration smoke: released v0.1.1 advanced invocation preserved (F2)');
+
+// ── P11 — the canonical delegation flow (v0.1.2 CN6) ──────────────────────
+
+/**
+ * The dogfood intent, stated the way a normal operator states it and nothing more: no canonical
+ * contract, no binder object, no model profile, no capability envelope. One call, then the result.
+ *
+ * The fixture is the tasklet repository READ-ONLY. It is used when present (the dogfood environment),
+ * and reported as SKIPPED elsewhere so this smoke stays runnable without it.
+ */
+const taskletRoot = process.env.PI_CHARTER_TASKLET_ROOT ?? resolve(ROOT, '..', 'tasklet');
+const taskletPlan = join(taskletRoot, 'CHARTER-DOGFOOD-DUMMY-BUILD-PLAN.md');
+if (!existsSync(taskletPlan)) {
+  console.log(`pi integration smoke: delegation flow SKIPPED (no read-only fixture at ${taskletPlan})`);
+} else {
+  // Count every operation this scenario performs, so the UX budget is measured, not asserted.
+  let compileAttempts = 0;
+  const delegationContext = {
+    model: { provider: OBSERVED.provider, id: OBSERVED.model },
+    sessionManager: { getSessionId: () => 'smoke-session-delegation' },
+    cwd: taskletRoot,
+  };
+  const delegationExecute = async (name, params) => {
+    if (name === 'charter_compile') compileAttempts += 1;
+    return executeIn(name, params, delegationContext);
+  };
+
+  const delegation = await delegationExecute('charter_compile', {
+    task: 'Implement JSON persistence',
+    role: 'implement',
+    target: 'subagents',
+    authority: 'CHARTER-DOGFOOD-DUMMY-BUILD-PLAN.md',
+    scope: ['internal/store/**'],
+    fresh: 'required',
+    gates: ['go test ./internal/store/...', 'go vet ./internal/store/...'],
+  });
+
+  assert(delegation.details.ok === true, `delegation charter_compile refused: ${delegation.content[0].text}`);
+  assert(delegation.details.status === 'HANDOFF_READY', `expected HANDOFF_READY, got ${delegation.details.status}`);
+  assert(compileAttempts === 1, `the canonical delegation must need exactly one compile attempt, got ${compileAttempts}`);
+  assert(delegation.details.truth !== undefined, 'the delegation result must state its truth block');
+  assert(delegation.details.truth.authority === 'BOUND', 'authority must be BOUND');
+  assert(delegation.details.truth.handoff === 'HANDOFF_READY', 'the handoff must be ready');
+  assert(delegation.details.truth.runtime_attested === false, 'no child runtime was observed, and the result must say so');
+  assert(delegation.details.truth.execution_proof === 'UNAVAILABLE', 'no child execution proof is available');
+  assert(delegation.details.execution_handle === undefined, 'a delegation compile must mint no execution handle');
+
+  const handoff = delegation.details.handoff;
+  assert(handoff.role === 'implement', 'the handoff must carry the resolved role');
+  assert(handoff.root === taskletRoot, 'the handoff must carry the declared root');
+  assert(
+    JSON.stringify(handoff.scope) === JSON.stringify({ directories: ['internal/store/**'] }),
+    `the handoff must carry the bounded scope, got ${JSON.stringify(handoff.scope)}`,
+  );
+  assert(handoff.fresh_context === 'REQUIRED', 'the declared fresh requirement must cross as a requirement');
+  assert(
+    handoff.fresh_session_required === true,
+    'the dispatch freshness truth must be consistent across the handoff fields (F1): the Wave 1B contradiction was REQUIRED alongside false',
+  );
+  assert(
+    handoff.routing.truth === 'REQUIREMENT_ONLY',
+    'routing must be stated as a requirement, never as proof of the child model',
+  );
+  assert(handoff.acceptance_commands.length === 2, 'the declared gates must cross as acceptance commands');
+  assert(
+    JSON.stringify(handoff.authority.bound_sources) === JSON.stringify(['CHARTER-DOGFOOD-DUMMY-BUILD-PLAN.md']),
+    'the handoff must name the authority document it was compiled from',
+  );
+  assert(
+    Object.values(handoff.enforcement).every((truth) => truth !== 'ENFORCED'),
+    'nothing about the unobserved child may be reported ENFORCED',
+  );
+
+  const panel = delegation.content[0].text;
+  for (const expected of ['Authority     BOUND', 'Handoff       READY', 'Runtime proof UNAVAILABLE', 'Fresh         required']) {
+    assert(panel.includes(expected), `the operator panel must state '${expected}', got:\n${panel}`);
+  }
+  assert(!panel.includes('EXECUTION_CONFORMANT'), 'a delegation result must never claim execution conformance');
+  console.log('pi integration smoke: canonical delegation operator panel:');
+  for (const line of panel.split('\n')) console.log(`  | ${line}`);
+  console.log(
+    `pi integration smoke: canonical delegation HANDOFF_READY via 1 compile attempt, ` +
+      `source reads 0, reference reads 0, config greps 0, no execution handle`,
+  );
+}
 
 // ── P10 — the Pi-facing extension owns no lifecycle and persists nothing ───
 

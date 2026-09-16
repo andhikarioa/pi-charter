@@ -3,6 +3,20 @@
 Charter is fail-closed: it refuses rather than reporting softer truth. A refusal is information, not
 an obstacle. Read it, satisfy the real missing authority, and re-run — or stop.
 
+The tool renders every refusal in an actionable shape, and the three parts are the contract:
+
+```text
+REFUSED
+
+Reason:  <CODE> @ <path> and what failed
+Retry:   YES, after <the minimal action> | NO, <why it is not retryable>
+Remedy:  the minimal operator action that resolves it
+```
+
+`HUMAN_DECISION_REQUIRED` and `UNSUPPORTED_BY_EXECUTION_TARGET` are not retryable at all; the other
+codes are retryable only after the stated remedy. No remedy ever widens authority: each one asks for
+less ambiguity, never for more permission.
+
 This file explains canonical core behavior so an operator can *interpret* a result. The core stays
 authoritative: where this documentation and an actual Charter result appear to disagree, the result
 wins and the difference is a documentation bug.
@@ -27,7 +41,8 @@ truth is an authority change and requires explicit human/project authority.
 ### `AUTHORITY_UNRESOLVED`
 
 - **Means:** an authority reference binds to zero sources or several sources, or no binder was
-  supplied.
+  supplied. On the simple operator surface it also means the named document is missing, empty,
+  not a regular file, or resolves outside the declared root — including through a symlink.
 - **Inspect:** `authority.sources` and which source each reference actually identifies.
 - **Must not guess:** "the closest file", "the obvious doc", or the whole repository. Exactly one
   binding per reference, or no resolution.

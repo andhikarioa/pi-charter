@@ -91,10 +91,19 @@ with the contract staying truthful about review independence.
 
 ### `subagents`
 
-Execution is intentionally delegated to the subagents substrate. Charter translates already-resolved
-truth into bounded handoff parameters (role, resolved model identity, fresh-session requirement,
-enforcement truth, contract). It spawns no child, tracks no child, retries nothing, and owns no
-worktree, process, lock, or child lifecycle — that is substrate responsibility.
+Execution is intentionally delegated to the subagents substrate. Charter compiles bounded delegation
+authority and translates it into handoff parameters — role, root, scope, permissions, resolved model
+identity, `routing { tier, truth: 'REQUIREMENT_ONLY' }`, fresh-context requirement, acceptance
+commands, authority identity, enforcement truth, and the resolved contract. It spawns no child, tracks
+no child, retries nothing, and owns no worktree, process, lock, or child lifecycle — that is substrate
+responsibility.
+
+The delegation result states its own weaker truth rather than withholding a compilable delegation:
+`HANDOFF_READY` with `runtime_attested: false` and `execution_proof: 'UNAVAILABLE'`. This process did
+not observe the child, so it attests no child capability, claims no child model, and mints no
+execution handle — the parent's own tool executions are never the child's run. Capability-gated
+requirements the unobserved target cannot be proven to satisfy (a fresh-session review, for instance)
+are still refused by canonical Phase 3, never softened into "planned".
 
 Selecting `subagents` is not a capability claim. Capability is exactly what the run's environment
 evidence establishes — never what the target name suggests.

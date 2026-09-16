@@ -90,7 +90,16 @@ test('subagents adapter — translates bound truth into bounded handoff paramete
   // The resolved model identity is handed over — not the tier preference, and never a substitute.
   assert.equal(handoff.model, contract.model.resolved);
   assert.equal(handoff.model, contract.model.preferred);
+  // …and what that identity IS is stated next to it: a routing REQUIREMENT the substrate resolves,
+  // never proof of which model a child actually ran (CN2).
+  assert.deepEqual(handoff.routing, { tier: 'workhorse', truth: 'REQUIREMENT_ONLY' });
   assert.equal(handoff.fresh_session_required, true);
+  // The bounded authority a dispatcher needs crosses as values, not as a contract to be re-read.
+  assert.deepEqual(handoff.scope, contract.scope);
+  assert.deepEqual(handoff.permissions, contract.permissions);
+  assert.deepEqual(handoff.acceptance_commands, contract.acceptance.commands);
+  assert.deepEqual(handoff.authority.bound_sources, contract.authority.bound_sources);
+  assert.deepEqual(handoff.authority.provenance, contract.authority.provenance);
   // Attested tool ceiling, but this contract declares no tool policy, so nothing is enforced yet (T3).
   assert.equal(handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
   assert.equal(handoff.enforcement.allowed_files, 'INSTRUCTED');
@@ -98,13 +107,18 @@ test('subagents adapter — translates bound truth into bounded handoff paramete
   assert.deepEqual(handoff.execution_contract, contract);
   // No Phase 4 envelope, and no invented tool list: the contract declares no tools.
   assert.deepEqual(Object.keys(handoff).sort(), [
+    'acceptance_commands',
     'allowed_tools',
+    'authority',
     'capability_evidence',
     'enforcement',
     'execution_contract',
     'fresh_session_required',
     'model',
+    'permissions',
     'role',
+    'routing',
+    'scope',
     'target',
   ]);
 });

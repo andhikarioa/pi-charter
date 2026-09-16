@@ -1,6 +1,6 @@
 ---
 name: pi-charter
-description: Compile explicit bounded authority, model routing, execution-target truth, role instructions, and fail-closed next actions for non-trivial Pi work. Use when work needs explicit scope, authority, permissions, verification, review/correction boundaries, adjudication, bounded escalation limits, or parent/subagents execution governance. Explains how to author a TaskContract and read Charter's governed results truthfully.
+description: Compile explicit bounded authority, model routing, execution-target truth, role instructions, and fail-closed next actions for non-trivial Pi work. Use when work needs explicit scope, authority, permissions, verification, review/correction boundaries, adjudication, bounded escalation limits, parent/subagents execution governance, or delegated child work. State the intent and call charter_compile first — no source archaeology, no hand-authored contract; then read the result's four truths (authority, handoff, runtime attestation, execution proof) truthfully.
 ---
 
 # pi-charter — operator guide
@@ -23,27 +23,108 @@ TaskContract
 Charter never spawns, supervises, retries, schedules, or recovers work, and holds no worker,
 session, queue, or lifecycle state. It is not an orchestrator, scheduler, or workflow runtime.
 
-## v0.1.1 usage truth — read first
+## Normal path — tool first, archaeology OFF by default
 
-pi-charter v0.1.1 ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported
-entry point) with a bundled **Pi extension**. From Pi, the supported surface is the two tools the
-extension registers — nothing handwritten, nothing temporary:
+From Pi, ordinary work needs no Charter knowledge at all. The whole flow is:
 
 ```text
-charter_compile           compile bounded governance for the active session and admit the exact
-                          artifact set for execution; returns an execution handle
+1. parse the operator's intent
+2. call charter_compile immediately, stating the intent directly
+3. consume the handoff or the refusal
+4. continue
+```
+
+One call, and only the fields the operator actually knows:
+
+```yaml
+task: implement JSON persistence
+role: implement
+target: subagents
+authority: CHARTER-DOGFOOD-DUMMY-BUILD-PLAN.md    # a document path relative to root
+scope: [internal/store/**]
+fresh: required
+gates: [go test ./internal/store/..., go vet ./internal/store/...]
+```
+
+Charter fills the deterministic fields core requires, resolves the authority document's content
+identity itself, and refuses — with a remedy — anything it cannot establish. A normal request needs
+**no** canonical `TaskContract` JSON, no binder object, no model profile, no capability envelope, and
+no knowledge of Charter's internals.
+
+```text
+ARCHAEOLOGY: OFF by default
+
+NO Charter source reads before the first compile
+NO dist/ or .d.ts inspection to find out how to call the tool
+NO Pi config grep
+NO implementation archaeology
+NO reference-chain traversal
+NO hand-authored TaskContract JSON for normal work
+```
+
+A reference may be opened only **after an explicit blocker** — the tool output itself is insufficient
+or contradicts what you were told — and then at most one, escalated only by the ladder below.
+Convenience is not a blocker. Curiosity is not a blocker.
+
+### Read the result as four separate truths
+
+```text
+Authority        BOUND | <refusal>        the bounded authority was compiled
+Handoff          READY | <refusal>        bounded delegation parameters exist
+Runtime attested YES | NO               did THIS process observe the runtime that runs the work?
+Execution proof  AVAILABLE | UNAVAILABLE did trusted execution evidence exist at all?
+```
+
+For every `execution_target=parent` compile: authority is `BOUND`, the artifact set is admitted, and
+execution proof arrives only when this session actually runs the work and reports the observation
+through `charter_verify_execution`. Admission is not execution.
+
+For every `execution_target=subagents` compile: authority is `BOUND`, the handoff is `READY`, runtime
+attestation is `NO`, and execution proof is `UNAVAILABLE` — this process does not observe the child.
+That is the truthful result, not a failure, and it is never a reason to refuse the delegation or to
+claim the stronger thing:
+
+```text
+Authority       BOUND
+Handoff         HANDOFF_READY
+Runtime proof   UNAVAILABLE
+Execution proof UNAVAILABLE
+
+routing         REQUIREMENT_ONLY   the tier is what the substrate must resolve, never proof of
+                                   which model the child ran
+fresh           REQUIRED | NOT_REQUIRED   a dispatch requirement, never an observation
+capability      unattested_claim   nothing about the child was observed, so nothing is ENFORCED
+```
+
+A delegation compile mints **no execution handle**, because a child this session cannot observe is
+never admitted for execution here: `charter_verify_execution` applies to the parent session only.
+
+## Surfaces
+
+pi-charter ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported entry
+point) with a bundled **Pi extension**. From Pi, the supported surface is the two tools the extension
+registers — nothing handwritten, nothing temporary:
+
+```text
+charter_compile           compile bounded governance for the active session, or bounded delegation
+                          authority for target=subagents; admits parent artifacts for execution
 charter_verify_execution  verify an OBSERVED run of this session against that admission, using that
                           handle; Pi's tool-execution event is the execution observation
 ```
 
-Neither tool accepts capability booleans, a model inventory, a trust boundary, or a caller-chosen
-compiler identity: those are derived from the live session or refused. There is no CLI and no
-`/charter` command; the tools are the Pi-native interface.
+`charter_compile` accepts either the simple intent above or, for advanced use, a full canonical
+`task_contract` together with the exact `authority_evidence { source, doc, revision? }` its
+`authority.sources` reference binds to. The sealed v0.1.1 spelling of that evidence — an `authority`
+object beside `task_contract` — is still accepted as a compatibility alias. Neither tool accepts capability booleans, a model inventory, a
+trust boundary, a model pin, or a caller-chosen compiler identity: those are derived from the live
+session or refused. There is no CLI and no `/charter` command; the tools are the Pi-native interface.
 
 Two supported library ways to invoke core:
 
 ```text
 compileForTarget          the one blessed facade — use it from a host integration
+compileDelegation         bounded delegation authority for target=subagents (handoff only, no
+                          runtime attestation, no execution handle)
 compileViaPi / observeExecutionViaPi / verifyExecutionViaPi
                           the library bridge — use it from TypeScript inside Pi; it derives the
                           environment evidence itself and mediates the active parent session only
@@ -102,9 +183,20 @@ routing — never choose a model in the skill, the prompt, or the plan.**
 `parent` — the current parent Pi session executes the resolved contract directly. First-class;
 subagents and intercom are not required.
 
-`subagents` — execution is intentionally delegated to the subagents substrate. Charter translates
-resolved truth into bounded handoff parameters; **Charter does not spawn, track, retry, or supervise
-the child.**
+`subagents` — execution is intentionally delegated to the subagents substrate. Charter compiles the
+bounded authority and translates resolved truth into bounded handoff parameters (role, root, scope,
+permissions, resolved model identity, routing requirement, fresh-context requirement, acceptance
+commands, authority identity, enforcement truth, contract); **Charter does not spawn, track, retry, or
+supervise the child, and does not attest the child runtime.**
+
+Delegation is compiled by `compileDelegation` (or by `charter_compile` with `target: subagents`). It
+returns `HANDOFF_READY` plus the truthful weaker evidence — `runtime_attested: false`,
+`execution_proof: 'UNAVAILABLE'`, `routing.truth: 'REQUIREMENT_ONLY'`, and capability evidence that is
+an unattested claim with no observed axis. Nothing about the child is `ENFORCED`, the resolved model
+is a routing requirement rather than proof of what the child ran, and no execution handle is minted:
+this process never admits a runtime it cannot observe. A requirement the target's capability cannot
+be proven to satisfy — a fresh-session review, for instance — is still refused by canonical Phase 3,
+never softened.
 
 Target is not capability. Capabilities come from environment **evidence**, never from a target name
 or a caller-supplied boolean: a raw `capability_claim` is recorded as an unattested claim and can
@@ -117,16 +209,25 @@ merely because a target was selected.
 `pi-intercom` is **optional** and external to Charter core. Use it only when communication between
 existing sessions genuinely helps. It is not part of the Charter execution pipeline.
 
-## Evidence truth in v0.1.1
+## Evidence truth in v0.1.2
 
 ```text
 claim              ≠ attestation           a source name, a version string, and a boundary-shaped
                                             record establish nothing without the exact boundary that
                                             issued the candidate
+authority BOUND    ≠ runtime attested      the bounded authority compiled; the child runtime was
+                                            never observed by this process
+Handoff READY      ≠ child execution       delegation parameters exist; nothing ran under them yet
+routing            REQUIREMENT_ONLY        the tier the substrate must resolve — never proof of the
+                                            model the child ran
+fresh              a REQUIREMENT            a dispatch requirement, never an observation that a
+                                            fresh session happened
 ENFORCED           = trusted capability evidence + an applicable canonical policy
 NOT_APPLICABLE     no policy for that dimension — nothing to enforce and nothing to instruct
 assertion bound    ≠ assertion verified     only evidence that the exact bound verifier ran and
                                             passed moves a bound assertion to verified
+command declared   ≠ acceptance verified    declared gates are declarations; verifier evidence is
+                                            reported separately, and never inferred from them
 ResolutionReceipt  ≠ ExecutionAttestation   a receipt proves what was COMPILED; a run is proven by
                                             trusted execution evidence
 correct authority  requires accepted finding provenance — a bound authority source grounds a named
@@ -143,6 +244,22 @@ findings, or architecture authority.
 If Charter refuses, **interpret the refusal** — do not rewrite the contract to make it pass, unless
 the user/authority explicitly changes the task.
 
+A refusal is a truth about the request, and the tool states it in a shape you can act on:
+
+```text
+REFUSED
+
+Reason:
+<CODE> @ <path>
+<what failed>
+
+Retry:
+YES, after <the minimal action> | NO, <why it is not retryable>
+
+Remedy:
+<the minimal operator action that resolves it>
+```
+
 ```text
 AUTHORITY_UNRESOLVED               → obtain explicit authority; do not pick the closest file
 MODEL_UNAVAILABLE                  → use only a declared fallback; otherwise stop
@@ -152,7 +269,9 @@ HUMAN_DECISION_REQUIRED            → stop autonomous progression
 ```
 
 Full meaning, inspection point, and forbidden guesses for every canonical code:
-`references/refusals-and-next-actions.md`.
+`references/refusals-and-next-actions.md`. The tool renders each refusal as **what failed**, whether
+**retrying is meaningful**, and the **minimal remedy** — a refusal is a truth about the request, not a
+puzzle, and its remedy never asks for more authority than the request already needed.
 
 ## TODO-first convention
 
@@ -170,27 +289,32 @@ RESEARCH: explicit permission only
 If authority is insufficient for the work: **STOP** and say so. Do not widen the search merely
 because more context would be convenient.
 
-## Reference-first read discipline
+## Read discipline — the tool first, references second
 
-For ordinary Charter use — authoring a contract, interpreting a result, explaining a boundary — the
+Normal operation never needs this section: the tool compiles from stated intent, and its output says
+what was established. This section governs the only remaining reason to read anything — **interpreting
+a result, explaining a boundary, or resolving a blocker the tool output itself could not settle**. The
 path is:
 
 ```text
-SKILL.md
+charter_compile (tool)          ← authoring happens here, not in these references
      ↓
-minimum relevant reference(s)
+SKILL.md                        ← only when the result needs interpretation
      ↓
-construct / interpret / guide
+minimum relevant reference(s)   ← only on a concrete blocker
+     ↓
+interpret / explain / guide
      ↓
 STOP
 ```
 
-1. Read this `SKILL.md`.
-2. Read only the reference(s) matching the current need.
-3. Use those references to author or interpret the Charter artifact.
+1. Call the tool first. It is the compile surface, and it is authoritative about what it established.
+2. Read this `SKILL.md` when a result needs interpretation.
+3. Read only the reference(s) matching the current blocker.
 4. **STOP when the task can be answered truthfully.** Sufficient evidence is a stop condition.
 
-Do not inspect core source merely to reconfirm facts this companion already answers.
+Do not inspect core source merely to reconfirm facts this companion already answers — and never
+before the first compile.
 
 ### Source escalation ladder
 
@@ -202,9 +326,10 @@ LEVEL 3   one exact defining core file — only when a specific contradiction re
 STOP
 ```
 
-Escalate only on an actual evidence gap:
+Escalate only on an actual evidence gap — and only **after** the tool has already been called:
 
 ```text
+the tool refused and its remedy does not resolve the blocker
 a required fact is absent from the references
 two companion references materially contradict each other
 runtime/package truth contradicts the references
@@ -233,8 +358,8 @@ must be evidenced, never assumed.
 
 | Need | Read |
 |------|------|
-| Invoke the library correctly (facade first, Pi integration, adapter contract, evidence rules) | `references/library-usage.md` |
-| Construct a TaskContract | `references/contract-authoring.md` |
+| Invoke the library correctly (facade first, Pi integration, delegation, adapter contract, evidence rules) | `references/library-usage.md` |
+| Author a canonical TaskContract (advanced path only — the tool does this normally) | `references/contract-authoring.md` |
 | Choose/understand role or target | `references/roles-and-targets.md` |
 | Interpret refusal / next action | `references/refusals-and-next-actions.md` |
 | See complete bounded examples | `references/worked-examples.md` |

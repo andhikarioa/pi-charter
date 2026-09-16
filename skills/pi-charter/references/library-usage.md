@@ -54,10 +54,71 @@ Pi loads the package's extension and exposes two tools. That is the Pi-native su
 script, no environment strings, no trust handed to the caller.
 
 ```text
-charter_compile           compile a bounded contract for the active session; returns the execution
-                          handle for the exact artifact set it admitted
+charter_compile           compile bounded governance for the active session, or bounded delegation
+                          authority for target=subagents; for parent it admits the exact artifact set
+                          and returns the execution handle
 charter_verify_execution  verify an observed run of this session, using that handle
 ```
+
+`charter_compile` takes either normal intent or a canonical contract:
+
+```text
+simple     task, role, target, authority (a root-relative document path), scope, root?, fresh?, gates
+advanced   task_contract + authority_evidence { source, doc, revision? }
+legacy     task_contract + authority { source, doc, revision? }   (the sealed v0.1.1 spelling, still accepted)
+```
+
+The simple path is normalized by `normalizeOperatorRequest` into the same strict canonical contract
+core has always validated — deterministic fields are filled with visible values, and everything the
+operator did not state stays unstated so core refuses it. The authority document is resolved from
+local truth, fail-closed: an absolute path, a path escaping the root, a directory, a missing or empty
+document each refuse, and no fuzzy filename match is ever attempted. Containment is checked on real
+paths, so a symlink (file or directory) whose target lies outside the declared root refuses exactly
+like a lexical `../` escape.
+
+## Delegation: `compileDelegation`
+
+`compileDelegation` compiles bounded authority for `execution_target=subagents` and returns a handoff,
+with the runtime claim explicitly NOT made:
+
+```text
+Authority        BOUND                 the canonical Phase 2/3 compilation
+Handoff          HANDOFF_READY         bounded delegation parameters, ready to dispatch
+Runtime attested NO                    this process observed no child runtime
+Execution proof  UNAVAILABLE           no admission handle exists, so none is minted
+```
+
+```ts
+import { compileDelegation } from 'pi-charter';
+
+const result = compileDelegation({
+  task_contract,                    // a subagents contract; a parent contract is refused here
+  authority_binder,
+  model_profile,
+  available,                        // the CLAIM channel: what THIS environment admits
+  fresh_context: 'REQUIRED',        // a dispatch requirement, never an observation
+});
+if (!result.ok) throw new Error(JSON.stringify(result.errors));
+const { handoff, truth } = result;
+```
+
+Handoff facts to rely on:
+
+- It carries role, root, scope, permissions, the resolved model identity, `routing { tier, truth:
+  'REQUIREMENT_ONLY' }`, `fresh_context`, `allowed_tools`, `acceptance_commands`, `authority`, the
+  enforcement truth table, and the resolved contract as a value.
+- `fresh_context` and `fresh_session_required` are two spellings of ONE dispatch freshness truth: the
+  operator's stated requirement OR the contract's out-of-session review requirement. They never
+  disagree, so dispatching on either field yields the same fresh-session decision.
+- `routing.truth` is always `REQUIREMENT_ONLY`: the resolved model is what the substrate must resolve,
+  never proof of which model a child ran. Charter holds no channel that observes a child's model.
+- Capability evidence is an unattested claim with no observed axis, so no constraint is `ENFORCED` and
+  the enforcement table is instruction-level truth.
+- It mints **no execution handle**. `observeExecution`/`verifyExecution` are not reachable from a
+  delegation handoff: a runtime this process cannot observe is never admitted for execution here, and
+  the parent's own tool executions are never reported as the child's run.
+- A capability-gated requirement the target cannot be proven to satisfy — a fresh-session review, for
+  instance — is refused by canonical Phase 3 with `UNSUPPORTED_BY_EXECUTION_TARGET`, never softened.
 
 If you are writing TypeScript inside the Pi process, the library bridge is the same integration:
 

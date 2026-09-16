@@ -80,6 +80,20 @@ export type {
 } from './core/execution/execution-attestation.ts';
 export * from './core/compile/compile-for-target.ts';
 export * from './bridge/pi-bridge.ts';
+// v0.1.2 Wave 1 surface: what a normal operator states, how bounded delegation is compiled, and how
+// those results are stated truthfully.
+//
+//   operator-request   simple intent → the canonical strict TaskContract + an authority binder
+//   compile-delegation bounded delegation authority for target=subagents, with runtime attestation
+//                      explicitly NOT claimed and no execution handle minted
+//   operator-surface   declared-versus-attested rendering, and actionable refusals
+//
+// None of these three is a trust position: the delegation path observes no runtime, mints no
+// admission, and holds no capability evidence beyond an empty observation set, so it can ground no
+// `ENFORCED` and no attested inventory. The rendering module reads already-established values.
+export * from './operator/operator-request.ts';
+export * from './operator/operator-surface.ts';
+export * from './delegation/compile-delegation.ts';
 // Final correction (F1/F3): the one supported adapter-facing integration contract. An adapter reports
 // observations; whether those observations are CANDIDATES or trusted evidence is decided by the host
 // authorization capability, and this surface admits exactly the ordinary (untrusted) integration plus
