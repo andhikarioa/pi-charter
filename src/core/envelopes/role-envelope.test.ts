@@ -461,7 +461,9 @@ test('P4-G — enforcement truth is transported faithfully and never upgraded (E
 // ── P4-H determinism and immutability ──────────────────────────────────────
 
 test('P4-H — deterministic compilation and rendering over frozen inputs', () => {
-  const binding = deepFreeze(structuredClone(bindToTarget(resolved(fixtureContract('critical correction')), ALL_FALSE)));
+  // The canonical binding itself, frozen. Its provenance is process-local object identity, so the
+  // binding must be the artifact the binder returned, not a copy of it (W1_ROLE_ENVELOPE_BINDING_PROVENANCE).
+  const binding = deepFreeze(bindToTarget(resolved(fixtureContract('critical correction')), ALL_FALSE));
   const before = JSON.stringify(binding);
 
   const first = compiled(binding);
@@ -474,8 +476,16 @@ test('P4-H — deterministic compilation and rendering over frozen inputs', () =
   assert.equal(/\d{4}-\d{2}-\d{2}/.test(text), false, 'rendering must carry no timestamp or date');
   assert.equal(text.includes('this envelope describes one bounded piece of work and stops.'), true);
 
-  // Same truth through a different object yields the same envelope: no aliasing, no identity coupling.
-  assert.deepEqual(compiled(structuredClone(binding)), first);
+  // Canonical provenance is not a field, so an uncorroborated copy is not the binding the canonical
+  // path produced: it compiles nothing at all.
+  const copied = compileRoleEnvelope({ target_binding: structuredClone(binding) });
+  assert.equal(copied.ok, false);
+  assert.deepEqual(codes(copied), ['INVALID_TASK_CONTRACT']);
+  assert.deepEqual(paths(copied), ['target_binding']);
+
+  // Same truth through a second canonical binding yields the same envelope: no aliasing, no identity
+  // coupling to one particular object.
+  assert.deepEqual(compiled(bindToTarget(resolved(fixtureContract('critical correction')), ALL_FALSE)), first);
 
   // Frozen artifact: truth cannot be widened after compilation.
   assert.equal(Object.isFrozen(first), true);

@@ -19,7 +19,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { createAttestationVerifier, type AttestationVerifier } from '../attestation/attestation.ts';
+// The package surface itself: the only entry point `package.json` exports. Probes below assert what it
+// does and does not admit, so a trust boundary cannot be minted by reaching the entry point.
+import * as charter from '../../index.ts';
+import { createAttestationVerifier, resolveAttestationEvidence, type AttestationCandidate, type AttestationVerifier } from '../attestation/attestation.ts';
 import { createAuthorityBinder } from '../authority/binder.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
@@ -825,16 +828,29 @@ test('W1-A6/A7 — candidate evidence is deterministic, and the boundary is a ca
   });
   assert.deepEqual(codes(substituted), ['INVALID_TASK_CONTRACT']);
 
+  // W1_ATTESTATION_VERIFIER_FORGEABILITY — a caller-authored CALLBACK is not a boundary either, not
+  // even a refusing one. A position any function can occupy is a position `() => true` occupies, and
+  // a candidate plus a caller callback must never mint trusted attestation.
+  for (const forgedCallback of [() => true, () => false]) {
+    const forged = bindingFor(task, {
+      capability_attestation: issued('parent', ALL_CAPABLE),
+      capability_attestation_verifier: forgedCallback as unknown as AttestationVerifier,
+    });
+    assert.deepEqual(codes(forged), ['INVALID_TASK_CONTRACT']);
+    assert.equal('binding' in forged, false);
+  }
+
   const idleBoundary = bindingFor(task, {
     capability_claim: allTrueClaim('parent'),
     capability_attestation_verifier: boundary('parent', PARENT),
   });
   assert.deepEqual(codes(idleBoundary), ['CONTRACT_CONTRADICTION']);
 
-  // A boundary that refuses vouches for nothing: the candidate stays a claim.
+  // A boundary that refuses vouches for nothing: the candidate stays a claim. The refusal comes from a
+  // real boundary that issued nothing, not from a callback standing in the boundary's position.
   const refusing = bindingFor(task, {
     capability_attestation: issued('parent', ALL_CAPABLE),
-    capability_attestation_verifier: () => false,
+    capability_attestation_verifier: createAttestationVerifier([]),
   });
   assert.ok(refusing.ok);
   if (!refusing.ok) return;
@@ -862,4 +878,198 @@ test('W1-A8/A9/A10/A11 — vouched capability still needs an applicable policy, 
   // A11 — sections are never a file policy, vouched capability or not.
   const sectionsOnly = chain(implementTask({ scope: { sections: ['P7'] } }), attestation('parent', fileCapable));
   assert.equal(sectionsOnly.binding.enforcement.allowed_files, 'NOT_APPLICABLE');
+});
+
+// ── W1 Corrector #2 — the remaining Wave 1 trust gaps ───────────────────────
+
+/** Paths of every refusal, in order. */
+function errorPaths(result: { ok: boolean; errors?: { path?: string }[] }): string[] {
+  return result.ok ? [] : (result.errors ?? []).map((error) => error.path ?? '');
+}
+
+test('W1-C2 A1–A8 — a caller candidate plus a caller callback mints no trusted attestation', () => {
+  const task = implementTask();
+
+  // A1/A2 — the exact attack: a caller-authored candidate plus a caller-authored callback (true or
+  // false). A callback occupies no boundary position, so there is no trusted path and no binding at
+  // all: the boundary is refused rather than silently treated as a refusal.
+  const candidate = issued('parent', ALL_CAPABLE);
+  for (const forged of [() => true, () => false, { vouches: () => true }, { vouches: true }, 'trusted']) {
+    const result = bindingFor(task, {
+      capability_attestation: candidate,
+      capability_attestation_verifier: forged as unknown as AttestationVerifier,
+    });
+    assert.deepEqual(codes(result), ['INVALID_TASK_CONTRACT'], String(forged));
+    assert.deepEqual(errorPaths(result), ['capability_attestation_verifier'], String(forged));
+    assert.equal('binding' in result, false, String(forged));
+  }
+
+  // A3 — the mint is not on the package surface at all. An ordinary caller reaches candidate
+  // validation and evidence resolution, and no way to author a boundary; the fixture seam lives
+  // inside the package, where Wave 2 wires the real issuer.
+  const surface = charter as unknown as Record<string, unknown>;
+  assert.equal(surface.createAttestationVerifier, undefined);
+  assert.equal(surface.markIssuedAttestationVerifier, undefined);
+  assert.equal(surface.isIssuedAttestationVerifier, undefined);
+  assert.equal(typeof surface.resolveAttestationEvidence, 'function');
+  assert.equal(typeof surface.bindExecutionTarget, 'function');
+
+  // A4 — a realistic adapter name plus a caller callback establishes nothing, and neither does
+  // calling the internal exact-issuance seam over the caller's own candidate when reached directly
+  // through `resolveAttestationEvidence`: an unbranded boundary is downgraded, never read as trust.
+  const realistic = issued('parent', ALL_CAPABLE);
+  assert.equal((realistic as { source: string }).source, 'pi-parent');
+  const downgraded = resolveAttestationEvidence(
+    realistic as unknown as AttestationCandidate,
+    (() => true) as unknown as AttestationVerifier,
+  );
+  assert.equal(downgraded.ok, true);
+  assert.equal(downgraded.ok === true ? downgraded.evidence.class : '', 'unattested_claim');
+
+  // A5/A6 — a model registry candidate with a realistic registry name is inventory only when a real
+  // boundary vouches for it. A fake inventory with a caller callback is not trusted, and neither is
+  // the same envelope with no boundary at all: both are claims, and the vouched twin is attested.
+  const registry = {
+    source_kind: 'model_registry',
+    source: 'pi-model-registry',
+    source_version: '0.1.0',
+    payload: { models: ['gemini-3.8-flash'] },
+  };
+  const fakeInventory = resolveModelAvailability({
+    attestation: { ...registry, payload: { models: ['ghost-model'] } },
+    verifier: (() => true) as unknown as AttestationVerifier,
+  });
+  assert.equal(fakeInventory.ok, false);
+  const unvouchedInventory = resolveModelAvailability({ attestation: registry });
+  assert.equal(unvouchedInventory.ok, true);
+  assert.equal(unvouchedInventory.ok === true ? unvouchedInventory.evidence.class : '', 'unattested_claim');
+  const vouchedInventory = resolveModelAvailability({
+    attestation: registry,
+    verifier: createAttestationVerifier([registry]),
+  });
+  assert.equal(vouchedInventory.ok, true);
+  assert.equal(vouchedInventory.ok === true ? vouchedInventory.evidence.class : '', 'attested');
+
+  // The resolver refuses the same forged boundary as an environment error, so the pipeline reports
+  // the attempt instead of quietly resolving an unattested inventory.
+  const validated = validateTaskContract(task, { authorityBinder: env().authorityBinder });
+  assert.equal(validated.ok, true);
+  if (!validated.ok) return;
+  const forgedEnv = resolveExecutionContract(validated.contract, {
+    ...env(),
+    model_availability_attestation: registry,
+    model_availability_attestation_verifier: (() => true) as unknown as AttestationVerifier,
+  });
+  assert.equal(forgedEnv.ok, false);
+  assert.deepEqual(forgedEnv.ok === false ? forgedEnv.errors.map((error) => error.code) : [], [
+    'INVALID_TASK_CONTRACT',
+  ]);
+
+  // A7/A8 — the controlled trusted seam still works end to end: a boundary minted inside the package
+  // over the attestation this environment issued vouches for exactly that candidate, and together
+  // with an applicable canonical policy it is what keeps ENFORCED reachable.
+  const trusted = chain(
+    implementTask({ execution_target: 'subagents', execution_policy: { allowed_tools: ['read'] } }),
+    attestation('subagents', ALL_CAPABLE),
+  );
+  assert.equal(trusted.binding.capability_evidence.class, 'attested');
+  assert.equal(trusted.binding.enforcement.allowed_tools, 'ENFORCED');
+  assert.equal(trusted.envelope.enforcement_truth.allowed_tools, 'ENFORCED');
+});
+
+test('W1-C2 B1–B8 — RoleEnvelope consumes only canonically bound enforcement truth', () => {
+  const trustedContract = implementTask({
+    execution_target: 'subagents',
+    execution_policy: { allowed_tools: ['read'] },
+  });
+
+  function refused(binding: unknown, label: string): void {
+    const result = compileBoundRoleEnvelope(binding as TargetBinding);
+    assert.deepEqual(codes(result), ['INVALID_TASK_CONTRACT'], label);
+    assert.deepEqual(errorPaths(result), ['target_binding'], label);
+    assert.equal('envelope' in result, false, label);
+  }
+
+  // B4/B6 — the canonical binding compiles, and the truth it was bound with is carried: attested
+  // capability plus the contract's own tool policy is ENFORCED governance output.
+  const canonical = chain(trustedContract, attestation('subagents', ALL_CAPABLE)).binding;
+  const compiled = compileBoundRoleEnvelope(canonical);
+  assert.equal(compiled.ok, true);
+  if (!compiled.ok) return;
+  assert.equal(compiled.envelope.capability_evidence.class, 'attested');
+  assert.equal(compiled.envelope.enforcement_truth.allowed_tools, 'ENFORCED');
+  assert.equal(compiled.envelope.enforcement_truth.model_selection, 'ENFORCED');
+
+  // B1 — a caller-authored binding-shaped object: every field present, an all-ENFORCED table, and
+  // attested-looking capability evidence with a real adapter name. Shape is not provenance.
+  refused(
+    {
+      target: canonical.target,
+      enforcement: Object.fromEntries(Object.keys(canonical.enforcement).map((axis) => [axis, 'ENFORCED'])),
+      capability_evidence: {
+        class: 'attested',
+        source_kind: 'execution_adapter',
+        source: 'pi-subagents',
+        evidence_identity: 'f'.repeat(64),
+      },
+      execution_contract: structuredClone(canonical.execution_contract),
+    },
+    'hand-authored binding',
+  );
+
+  // B2 — a spread copy of the real binding with forged trusted fields: the copy is uncorroborated, and
+  // the forged enforcement truth never reaches the envelope.
+  refused({ ...canonical, enforcement: { ...canonical.enforcement, archaeology_off: 'ENFORCED' } }, 'spread + forged truth');
+  refused(
+    {
+      ...canonical,
+      capability_evidence: {
+        class: 'attested',
+        source_kind: 'execution_adapter',
+        source: 'pi-subagents',
+        evidence_identity: 'f'.repeat(64),
+      },
+    },
+    'spread + forged evidence',
+  );
+
+  // B3 — a JSON roundtrip and any other clone are new objects: canonical provenance is not a field,
+  // so it is not inherited by copying, and trust is never silently retained.
+  refused(JSON.parse(JSON.stringify(canonical)), 'json roundtrip');
+  refused(structuredClone(canonical), 'structuredClone');
+  refused(Object.assign(Object.create(null), canonical), 'prototype-free copy');
+
+  // Provenance is bound to the payload it was minted with: editing a real binding afterwards changes
+  // what it carries, so it compiles nothing either.
+  const edited = chain(trustedContract, attestation('subagents', ALL_CAPABLE)).binding;
+  (edited as unknown as { enforcement: Record<string, string> }).enforcement.archaeology_off = 'ENFORCED';
+  refused(edited, 'edited canonical binding');
+
+  // B5 — a canonical raw/unattested binding still compiles, and its truth stays raw/unattested: no
+  // constraint is reported ENFORCED on the strength of a claim.
+  const rawBound = chain(implementTask(), { capability_claim: allTrueClaim('parent') }).binding;
+  const rawEnvelope = compileBoundRoleEnvelope(rawBound);
+  assert.equal(rawEnvelope.ok, true);
+  if (!rawEnvelope.ok) return;
+  assert.equal(rawEnvelope.envelope.capability_evidence.class, 'unattested_claim');
+  assert.equal(Object.values(rawEnvelope.envelope.enforcement_truth).includes('ENFORCED'), false);
+
+  // B7 — with no declared tool policy the canonical truth is NOT_APPLICABLE, and a forged table cannot
+  // invent an ENFORCED tool ceiling out of it.
+  const noPolicy = chain(implementTask(), attestation('parent', ALL_CAPABLE)).binding;
+  assert.equal(noPolicy.enforcement.allowed_tools, 'NOT_APPLICABLE');
+  refused({ ...noPolicy, enforcement: { ...noPolicy.enforcement, allowed_tools: 'ENFORCED' } }, 'invented tool policy');
+
+  // B8 — a sections-only file scope is not a file policy, and a forged table cannot invent an ENFORCED
+  // file scope out of it. The canonical binding keeps NOT_APPLICABLE (T3), and refuses nothing.
+  const sectionsOnly = chain(
+    implementTask({ scope: { sections: ['P7'] } }),
+    attestation('parent', ALL_CAPABLE),
+  ).binding;
+  assert.equal(sectionsOnly.enforcement.allowed_files, 'NOT_APPLICABLE');
+  refused({ ...sectionsOnly, enforcement: { ...sectionsOnly.enforcement, allowed_files: 'ENFORCED' } }, 'invented file policy');
+  const preserved = compileBoundRoleEnvelope(sectionsOnly);
+  assert.equal(preserved.ok, true);
+  if (!preserved.ok) return;
+  assert.equal(preserved.envelope.enforcement_truth.allowed_files, 'NOT_APPLICABLE');
 });

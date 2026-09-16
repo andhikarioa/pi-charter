@@ -21,6 +21,7 @@
 
 import { resolveAssertionBindings, type AssertionBinding, type AssertionBinder } from '../acceptance/assertion-binding.ts';
 import type { EnvironmentEvidence, AttestationVerifier } from '../attestation/attestation.ts';
+import { isIssuedAttestationVerifier } from '../attestation/trusted-boundary.ts';
 import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import { TERMINAL_POLICY, type ExecutionContract } from '../contracts/execution-contract.ts';
@@ -58,9 +59,11 @@ export interface ResolverEnv {
   /** Attested model inventory from an admitted registry source (H2). Exactly one of these two. */
   model_availability_attestation?: unknown;
   /**
-   * The explicit trusted-attestation boundary for that inventory (W1_ATTESTATION_SELF_PROMOTION). A
-   * CAPABILITY the environment supplies, never a submitted value: with no verifier declared, the
-   * submitted envelope is recorded as a claim and never as attested registry truth.
+   * The explicit trusted-attestation boundary for that inventory (W1_ATTESTATION_SELF_PROMOTION,
+   * W1_ATTESTATION_VERIFIER_FORGEABILITY). A CAPABILITY OBJECT the environment holds, never a
+   * submitted value and never a callback: a function, a boundary-shaped record, a copy, and a clone
+   * are all refused here, and with no boundary declared the submitted envelope is recorded as a claim
+   * and never as attested registry truth.
    */
   model_availability_attestation_verifier?: AttestationVerifier;
 }
@@ -288,17 +291,18 @@ function checkEnv(env: ResolverEnv): CharterError[] {
       message: 'env.correctionBinder must carry both a findings binder and an acceptance binder',
     });
   }
-  // The trust boundary is a capability or it is absent. A data value here would be a submitted
-  // envelope trying to occupy the verifier's position, which is exactly the self-promotion this
-  // boundary exists to stop; a verifier with nothing to verify is a contradiction, not a no-op.
+  // The trust boundary is a capability or it is absent. A function, a boundary-shaped record, a copy,
+  // or any other submitted value here is a caller trying to occupy the boundary position, which is
+  // exactly the promotion W1_ATTESTATION_VERIFIER_FORGEABILITY exists to stop, so it is refused rather
+  // than read as trust; a boundary with nothing to verify is a contradiction, not a no-op.
   const availabilityVerifier: unknown = (env as { model_availability_attestation_verifier?: unknown })
     .model_availability_attestation_verifier;
-  if (availabilityVerifier !== undefined && typeof availabilityVerifier !== 'function') {
+  if (availabilityVerifier !== undefined && !isIssuedAttestationVerifier(availabilityVerifier)) {
     errors.push({
       code: 'INVALID_TASK_CONTRACT',
       path: 'env.model_availability_attestation_verifier',
       message:
-        'env.model_availability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+        'env.model_availability_attestation_verifier must be a trusted attestation boundary minted by this environment; a submitted function, record, or copy is not a trust boundary',
     });
   }
   if (availabilityVerifier !== undefined && env.model_availability_attestation === undefined) {

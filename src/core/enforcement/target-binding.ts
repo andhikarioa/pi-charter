@@ -18,10 +18,18 @@
  * A raw capability claim is not evidence (T2). `bindExecutionTargetFromClaim` binds it truthfully —
  * no constraint is ever reported `ENFORCED` from a claim — and the binding records the evidence
  * class, so a reader can see which path produced the truth. A submitted attestation is a CANDIDATE
- * too: it is validated fail-closed, and its booleans reach the truth table only when the explicit
- * `AttestationVerifier` this binding was wired with vouches for it
- * (W1_ATTESTATION_SELF_PROMOTION). A candidate nobody vouches for is recorded as an unattested
- * claim, so no source name, source kind, or envelope field can promote itself to `ENFORCED`.
+ * too: it is validated fail-closed, and its booleans reach the truth table only when the trusted
+ * attestation boundary this binding was wired with vouches for it (W1_ATTESTATION_SELF_PROMOTION,
+ * W1_ATTESTATION_VERIFIER_FORGEABILITY). That boundary is a capability OBJECT recognised by
+ * process-local identity, never a callback: a submitted function, a boundary-shaped record, a copy,
+ * and a clone are all refused, so no caller can occupy the trusted position by supplying a value.
+ * A candidate nobody vouches for is recorded as an unattested claim, so no source name, source kind,
+ * or envelope field can promote itself to `ENFORCED`.
+ *
+ * The binding this module returns is the one and only artifact RoleEnvelope compilation accepts as
+ * canonically bound (W1_ROLE_ENVELOPE_BINDING_PROVENANCE). A structurally valid, binding-shaped object
+ * a caller authored — or a copy, clone, JSON roundtrip, or post-hoc edit of a real one — carries no
+ * canonical provenance and renders no governance truth, because provenance here is not a field.
  *
  * Everything here is pure and explicit: no clock, no randomness, no registry, no discovery, no
  * persistence. Charter does not execute the work, and it does not implement a primitive the
@@ -35,8 +43,10 @@ import {
   type AttestationVerifier,
   type EnvironmentEvidence,
 } from '../attestation/attestation.ts';
+import { isIssuedAttestationVerifier } from '../attestation/trusted-boundary.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
+import { evidenceIdentity } from '../provenance/evidence.ts';
 import {
   ENFORCEMENT_CONSTRAINTS,
   ENFORCEMENT_REQUIREMENTS,
@@ -141,6 +151,71 @@ export interface TargetBinding {
 }
 
 export type TargetBindingResult = { ok: true; binding: TargetBinding } | { ok: false; errors: CharterError[] };
+
+// ── Canonical binding provenance (v0.1.1 W1_ROLE_ENVELOPE_BINDING_PROVENANCE) ─
+
+/**
+ * Canonical provenance for one binding, held OUTSIDE the value.
+ *
+ * `TargetBinding` is plain, readable, copyable data — which is exactly why its shape can never prove
+ * anything: a caller can reproduce every field of a real binding, including an all-`ENFORCED` truth
+ * table and attested capability evidence. Provenance is therefore process-local object identity in a
+ * store that is never exported, integrity-bound to the exact payload that was bound:
+ *
+ *   identity   the object THIS process's binder returned, recognised in a non-exported WeakMap;
+ *   integrity  SHA-256 over the four transported fields, so a bound value cannot be edited into one
+ *              carrying forged enforcement truth or forged capability evidence.
+ *
+ * A spread, a copy, a `structuredClone`, and a JSON roundtrip are all new objects with no entry in
+ * the store, so they are refused rather than trusted: canonical provenance is not a field anyone can
+ * write, and it is not inherited by resemblance.
+ *
+ * This is deliberately process-local. Persisting or transporting a binding across a process boundary
+ * would need an explicit re-cognition step, which v0.1.1 does not define and therefore does not
+ * silently grant (spec §10).
+ */
+const CANONICAL_BINDINGS = new WeakMap<object, string>();
+// ponytail: provenance is process-local, so a binding cannot be transported across a process boundary
+// and stay canonical. Add an explicit re-cognition boundary (never a writable provenance field) when
+// some real caller actually needs to move a binding between processes; nothing in v0.1.1 does.
+
+/**
+ * True only for a binding this process's canonical binder produced AND that still carries exactly the
+ * payload it was bound with. Shape-valid binding data is never canonical by resemblance, and an
+ * uncorroborated copy never becomes canonical by being copied.
+ */
+export function isCanonicalTargetBinding(value: unknown): boolean {
+  if (typeof value !== 'object' || value === null) return false;
+  const bound = CANONICAL_BINDINGS.get(value);
+  return bound !== undefined && bound === bindingIntegrity(value);
+}
+
+/**
+ * SHA-256 over the exact bound payload: all four transported fields carry trust, so all four are
+ * covered. Total by construction — a payload that cannot be canonically digested (a cycle, a getter
+ * that throws) returns `undefined`, which matches no bound identity, so it fails closed instead of
+ * crashing the compiler it was handed to.
+ */
+function bindingIntegrity(value: unknown): string | undefined {
+  const binding = value as TargetBinding;
+  try {
+    return evidenceIdentity({
+      target: binding.target,
+      enforcement: binding.enforcement,
+      capability_evidence: binding.capability_evidence,
+      execution_contract: binding.execution_contract,
+    });
+  } catch {
+    return undefined;
+  }
+}
+
+/** Mint canonical provenance for one binding, bound to the exact payload returned to the caller. */
+function markCanonicalTargetBinding(binding: TargetBinding): TargetBinding {
+  const integrity = bindingIntegrity(binding);
+  if (integrity !== undefined) CANONICAL_BINDINGS.set(binding, integrity);
+  return binding;
+}
 
 const BINDING_INPUT_KEYS = [
   'execution_contract',
@@ -307,14 +382,14 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
     // trusted evidence, and only the verifier it is handed can say so (W1_ATTESTATION_SELF_PROMOTION).
     let verifier: AttestationVerifier | undefined;
     if (hasVerifier) {
-      if (typeof raw.capability_attestation_verifier !== 'function') {
+      if (!isIssuedAttestationVerifier(raw.capability_attestation_verifier)) {
         err(
           'INVALID_TASK_CONTRACT',
           'capability_attestation_verifier',
-          'capability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+          'capability_attestation_verifier must be a trusted attestation boundary minted by this environment; a submitted function, record, or copy is not a trust boundary',
         );
       } else {
-        verifier = raw.capability_attestation_verifier as AttestationVerifier;
+        verifier = raw.capability_attestation_verifier;
       }
     }
     const attested = checkCapabilityAttestationCandidate(raw.capability_attestation, target, verifier, err);
@@ -341,19 +416,19 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
   checkReviewCapability(contract.acceptance, capabilities, target, err);
   if (errors.length > 0) return { ok: false, errors };
 
-  return {
-    ok: true,
-    binding: {
-      target,
-      enforcement,
-      capability_evidence: capabilityEvidence,
-      // SAFETY: `contract` is the resolved ExecutionContract this binding was handed. Only its target
-      // identity and policy-bearing fields are re-read above, because re-validating a resolved
-      // contract is Phase 1/2 work that Phase 3 deliberately does not repeat. Cloning keeps the
-      // Phase 2 artifact unreachable.
-      execution_contract: structuredClone(contract as unknown as ExecutionContract),
-    },
+  const binding: TargetBinding = {
+    target,
+    enforcement,
+    capability_evidence: capabilityEvidence,
+    // SAFETY: `contract` is the resolved ExecutionContract this binding was handed. Only its target
+    // identity and policy-bearing fields are re-read above, because re-validating a resolved
+    // contract is Phase 1/2 work that Phase 3 deliberately does not repeat. Cloning keeps the
+    // Phase 2 artifact unreachable.
+    execution_contract: structuredClone(contract as unknown as ExecutionContract),
   };
+  // Canonical provenance is minted here and only here, so no other value in the process can be
+  // accepted by RoleEnvelope compilation as canonically bound (W1_ROLE_ENVELOPE_BINDING_PROVENANCE).
+  return { ok: true, binding: markCanonicalTargetBinding(binding) };
 }
 
 /**

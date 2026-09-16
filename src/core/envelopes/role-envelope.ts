@@ -11,6 +11,13 @@
  * supplied by the caller and never widened. The only values the compiler authors are instruction
  * text: the role templates below, and the renderings of already-resolved truth.
  *
+ * The binding must also be CANONICALLY BOUND, not merely binding-shaped
+ * (W1_ROLE_ENVELOPE_BINDING_PROVENANCE). Provenance is process-local identity minted by
+ * `bindExecutionTarget` and integrity-bound to the exact bound payload, so a caller-authored binding —
+ * or a copy, clone, JSON roundtrip, or post-hoc edit of a real one — is REFUSED instead of having its
+ * enforcement truth and capability evidence rendered as trusted governance in a value that would be
+ * handed to an executor.
+ *
  * Enforcement truth is transported, never recomputed and never upgraded (spec §23, E10). A
  * constraint the target only receives as instruction is rendered as instruction; `ENFORCED` wording
  * appears only where Phase 3 reported `ENFORCED`.
@@ -46,6 +53,7 @@ import {
 import { isResolvedCorrectionTarget, type ResolvedCorrectionTarget } from '../correction/correction-authority.ts';
 import {
   ENFORCEMENT_TRUTHS,
+  isCanonicalTargetBinding,
   type EnforcementTruth,
   type EnforcementTruthTable,
   type TargetBinding,
@@ -255,6 +263,25 @@ export function compileRoleEnvelope(input: unknown): RoleEnvelopeResult {
   }
   if (errors.length > 0) return { ok: false, errors };
 
+  // Canonical provenance, not structural resemblance (W1_ROLE_ENVELOPE_BINDING_PROVENANCE). Shape
+  // validation above cannot tell a binding the canonical path produced from one a caller authored: an
+  // all-`ENFORCED` table and attested-looking capability evidence are just fields. The envelope is an
+  // execution-facing artifact, so a binding whose provenance cannot be proven compiles nothing — it
+  // fails closed here rather than transporting forged enforcement truth to a role it would govern.
+  if (!isCanonicalTargetBinding(binding)) {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'INVALID_TASK_CONTRACT',
+          path: 'target_binding',
+          message:
+            "target_binding must be a binding this process's canonical binder produced; a hand-authored, copied, cloned, or edited binding carries no canonical provenance and no enforcement truth",
+        },
+      ],
+    };
+  }
+
   // SAFETY: the shape checks above establish every field the envelope copies. Re-validating a
   // resolved contract is Phase 1/2 work that this phase deliberately does not repeat.
   const src = contract as unknown as ExecutionContract;
@@ -328,6 +355,9 @@ export function compileRoleEnvelope(input: unknown): RoleEnvelopeResult {
 /**
  * Compile from a binding the caller already holds, without a wrapper. Available so adapters can
  * hand off envelope truth without ever authoring role text themselves (Phase 4 charter §20).
+ *
+ * The binding must be the canonically bound artifact `bindExecutionTarget` returned; a
+ * binding-shaped value a caller assembled, copied, cloned, or edited compiles nothing.
  */
 export function compileBoundRoleEnvelope(binding: TargetBinding): RoleEnvelopeResult {
   return compileRoleEnvelope({ target_binding: binding } satisfies RoleEnvelopeInput);

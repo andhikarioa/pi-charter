@@ -10,13 +10,16 @@
  * admitted `source_kind`, a non-empty `source` name, and a canonical payload promotes nothing. A
  * source name is not a trust boundary, and neither is any other field of the envelope.
  *
- * Trust is a separate act, and it belongs to exactly one place: the explicit verifier the embedding
- * environment supplies (`AttestationVerifier`) — a CAPABILITY, exactly as it supplies an authority
- * or assertion binder, and therefore a position no submitted value can occupy. Charter implements no
- * issuer, reads no environment, and decides no trust of its own: with no verifier supplied, nothing
- * is trusted. Only `attested` evidence can ground `ENFORCED` or a hard attested-evidence
- * requirement, and only a candidate the verifier vouched for grounds `attested` evidence. An unknown
- * source kind still fails closed.
+ * Trust is a separate act, and it belongs to exactly one place: the trusted-attestation boundary the
+ * embedding environment supplies (`AttestationVerifier`) — a CAPABILITY OBJECT, recognised by
+ * process-local object identity in a store that is never exported from the package surface, and
+ * therefore a position no submitted value can occupy. A callback is not a boundary, a
+ * boundary-shaped record is not a boundary, and a caller who mints one over their own candidate has
+ * reached inside the package rather than through its surface. Charter implements no issuer, reads no
+ * environment, and decides no trust of its own: with no boundary supplied, nothing is trusted. Only
+ * `attested` evidence can ground `ENFORCED` or a hard attested-evidence requirement, and only a
+ * candidate the boundary vouched for grounds `attested` evidence. An unknown source kind still fails
+ * closed.
  *
  * Wave 1 defines this schema, its identity requirements, and the verification boundary. Issuing
  * attestations from real Pi/subagents/provider evidence is Wave 2 work: nothing here reads the
@@ -25,6 +28,7 @@
 
 import type { CharterErrorCode } from '../contracts/errors.ts';
 import { evidenceDigest, evidenceIdentity } from '../provenance/evidence.ts';
+import { isIssuedAttestationVerifier, markIssuedAttestationVerifier } from './trusted-boundary.ts';
 
 /** Closed vocabulary of evidence sources Charter admits. An unlisted kind fails closed. */
 export const ATTESTATION_SOURCE_KINDS = ['execution_adapter', 'model_registry'] as const;
@@ -52,19 +56,25 @@ export interface AttestationCandidate {
 }
 
 /**
- * The explicit trusted-attestation boundary (W1_ATTESTATION_SELF_PROMOTION).
+ * The explicit trusted-attestation boundary (W1_ATTESTATION_SELF_PROMOTION,
+ * W1_ATTESTATION_VERIFIER_FORGEABILITY).
  *
- * This is the one place trust enters Charter, and it is a capability rather than a payload: an
- * environment that can actually vouch for its own adapters and registries supplies it, exactly as it
- * supplies an authority or assertion binder. No submitted envelope, source name, version, or extra
- * field can take this position, and Charter never reads a candidate's trust out of its contents.
+ * This is the one place trust enters Charter, and it is a capability OBJECT rather than a callback
+ * because a callback cannot hold a position: any function with this signature is substitutable, and
+ * `() => true` would be an issuer. A boundary is recognised only by process-local object identity in
+ * the non-exported store (`trusted-boundary.ts`), so nothing a caller supplies — a function, a
+ * boundary-shaped record, a copy, a clone, a JSON roundtrip — occupies this position, and Charter
+ * never reads a candidate's trust out of its contents.
  *
- * Answers true only for a candidate this environment actually issued. A false answer, an absent
- * verifier, and a boundary that throws all refuse alike, so an unusable boundary fails closed
- * instead of trusting. Wave 2 supplies the real Pi/subagents issuer here; until then, nothing wires
- * a production boundary.
+ * `vouches` answers true only for a candidate this environment actually issued. A false answer, an
+ * absent boundary, and a boundary that throws all refuse alike, so an unusable boundary fails closed
+ * instead of trusting. Wave 2 supplies the real Pi/subagents issuer behind this position; until then
+ * no production path mints one.
  */
-export type AttestationVerifier = (candidate: AttestationCandidate) => boolean;
+export interface AttestationVerifier {
+  /** True only for a candidate this environment actually issued. Never a submitted value's contents. */
+  vouches(candidate: AttestationCandidate): boolean;
+}
 
 /**
  * Exact-issuance verifier: an environment that holds the attestations it issued can vouch for
@@ -75,20 +85,32 @@ export type AttestationVerifier = (candidate: AttestationCandidate) => boolean;
  * trusted. This recognises only attestations the environment already authored in its own code, so it
  * cannot be satisfied by anything a caller submits — a capability, not a knob.
  *
- * The Wave 1 embedding/fixture seam, not an issuer: it reads nothing from the environment, and Wave 2
- * replaces it with the real evidence bridge.
+ * The Wave 1 fixture/blessed-adapter seam, not an issuer: it reads nothing from the environment, and
+ * Wave 2 replaces it with the real evidence bridge.
+ *
+ * INTERNAL — NOT PACKAGE SURFACE. This factory is the only thing that can mint a trusted boundary, so
+ * it is deliberately absent from the exports of `index.ts` (the package's only entry point): an
+ * ordinary caller cannot author trust at all, and a caller who mints a boundary over its own
+ * candidate has reached inside the package instead of through its surface. The exact-issuance rule is
+ * also what keeps the seam honest: a boundary can vouch only for attestations its environment already
+ * holds, never for everything.
  */
 export function createAttestationVerifier(issued: readonly unknown[]): AttestationVerifier {
   const identities = new Set(issued.map((attestation) => attestationIdentity(attestation)));
-  return (candidate) => {
-    // A candidate whose payload cannot be canonically identity-hashed is not one of the issued
-    // attestations: it is refused rather than crashing the boundary it was handed to.
-    try {
-      return identities.has(attestationIdentity(candidate));
-    } catch {
-      return false;
-    }
+  const boundary: AttestationVerifier = {
+    vouches(candidate) {
+      // A candidate whose payload cannot be canonically identity-hashed is not one of the issued
+      // attestations: it is refused rather than crashing the boundary it was handed to.
+      try {
+        return identities.has(attestationIdentity(candidate));
+      } catch {
+        return false;
+      }
+    },
   };
+  // Frozen and admitted to the process-local identity store: a boundary is a value others may hold
+  // and call, never one they can edit into a wider one.
+  return markIssuedAttestationVerifier(Object.freeze(boundary));
 }
 
 /**
@@ -142,11 +164,17 @@ export function resolveAttestationEvidence(
   };
 }
 
-/** Fail-closed boundary call: no verifier, a false answer, or a boundary that throws means no trust. */
+/**
+ * Fail-closed boundary call: an absent boundary, a value that is not a minted boundary at all (a
+ * callback, a boundary-shaped record, a copy), a false answer, and a boundary that throws all mean no
+ * trust. The identity check is what makes the position unforgeable — no part of the supplied value's
+ * shape is ever read as trust — so this path downgrades a forged boundary to the claim it is even if
+ * a caller reaches `resolveAttestationEvidence` directly.
+ */
 function isVouchedFor(candidate: AttestationCandidate, verifier: AttestationVerifier | undefined): boolean {
-  if (verifier === undefined) return false;
+  if (!isIssuedAttestationVerifier(verifier)) return false;
   try {
-    return verifier(candidate) === true;
+    return verifier.vouches(candidate) === true;
   } catch {
     return false;
   }

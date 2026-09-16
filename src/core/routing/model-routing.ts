@@ -14,6 +14,7 @@ import {
   resolveAttestationEvidence,
   type AttestationVerifier,
 } from '../attestation/attestation.ts';
+import { isIssuedAttestationVerifier } from '../attestation/trusted-boundary.ts';
 import type { CharterError } from '../contracts/errors.ts';
 import type { Risk, Role, TaskClass } from '../contracts/task-contract.ts';
 
@@ -108,14 +109,14 @@ export function resolveModelAvailability(input: {
       },
     };
   }
-  if (input.verifier !== undefined && typeof input.verifier !== 'function') {
+  if (input.verifier !== undefined && !isIssuedAttestationVerifier(input.verifier)) {
     return {
       ok: false,
       error: {
         code: 'INVALID_TASK_CONTRACT',
         path: 'env.model_availability_attestation_verifier',
         message:
-          'env.model_availability_attestation_verifier must be an attestation verifier; a submitted value is not a trust boundary',
+          'env.model_availability_attestation_verifier must be a trusted attestation boundary minted by this environment; a submitted function, record, or copy is not a trust boundary',
       },
     };
   }
