@@ -17,13 +17,25 @@ import * as charter from '../index.ts';
 import { createAuthorityBinder } from '../index.ts';
 import type { ModelProfile } from '../index.ts';
 import type { TaskContract } from '../index.ts';
+// The host seam. These live in the integration module and are deliberately not re-exported by
+// `index.ts`: an in-package test wiring the runtime integration's position is not an ordinary package
+// consumer, and reaching them from outside the package means reaching inside it.
+import {
+  createHostAuthorizedAdapterIntegration,
+  HOST_ADAPTER_AUTHORITY,
+} from './adapter-integration.ts';
 
 const MODEL = 'fixture-adapter-model';
-const PROFILE: ModelProfile = {
-  workhorse: { preferred: MODEL, fallback: [] },
-  reviewer: { preferred: MODEL, fallback: [] },
-  reasoning: { preferred: MODEL, fallback: [] },
-};
+
+function profileFor(model: string): ModelProfile {
+  return {
+    workhorse: { preferred: model, fallback: [] },
+    reviewer: { preferred: model, fallback: [] },
+    reasoning: { preferred: model, fallback: [] },
+  };
+}
+
+const PROFILE: ModelProfile = profileFor(MODEL);
 const AUTHORITY = createAuthorityBinder({ 'adapter-spec': { doc: 'ADAPTER-SPEC.md', revision: '3' } });
 
 function contract(overrides: Partial<TaskContract> = {}): TaskContract {
@@ -42,17 +54,51 @@ function contract(overrides: Partial<TaskContract> = {}): TaskContract {
   };
 }
 
-/** A legitimate external adapter: it observes its runtime and asks core for everything else. */
-function fakeSubstrateAdapter(
-  observed = { target: 'parent' as const, provider: 'fake-provider', model: MODEL, session_identity: 'fake-session' },
+/** The plain runtime observation every fixture adapter reports unless it changes it. */
+const FIXTURE_OBSERVATION = {
+  target: 'parent' as const,
+  provider: 'fake-provider',
+  model: MODEL,
+  session_identity: 'fake-session',
+};
+
+/** The adapter identity and callbacks, independent of which trust position constructs the adapter. */
+function adapterOptions(
+  name: string,
+  observed = FIXTURE_OBSERVATION,
   capabilities?: () => charter.AdapterCapabilityObservationResult,
-) {
-  return charter.createAdapterIntegration({
-    name: 'external-fixture-adapter',
+): charter.AdapterIntegrationOptions {
+  return {
+    name,
     version: '9.9.9',
     observeEnvironment: () => ({ ok: true, observation: { ...observed, runtime: 'fixture-runtime' } }),
     ...(capabilities !== undefined ? { observeCapabilities: capabilities } : {}),
-  });
+  };
+}
+
+/**
+ * An external adapter: a legitimate caller of the public contract, which holds no host
+ * authorization. Its observations are candidates, and this is the position A1/A2/A8 are about.
+ */
+function fakeSubstrateAdapter(
+  observed = FIXTURE_OBSERVATION,
+  capabilities?: () => charter.AdapterCapabilityObservationResult,
+) {
+  return charter.createAdapterIntegration(adapterOptions('external-fixture-adapter', observed, capabilities));
+}
+
+/**
+ * The host-authorized position: how the runtime integration the package itself wires constructs an
+ * adapter, with the authority this process minted. Only this position may have observations promoted.
+ */
+function hostAdapter(
+  observed = FIXTURE_OBSERVATION,
+  capabilities?: () => charter.AdapterCapabilityObservationResult,
+) {
+  return createHostAuthorizedAdapterIntegration(
+    adapterOptions('host-authorized-fixture-adapter', observed, capabilities),
+    HOST_ADAPTER_AUTHORITY,
+  );
 }
 
 /**
@@ -61,21 +107,30 @@ function fakeSubstrateAdapter(
  */
 function sessionSwitchingAdapter(initial = 'session-a') {
   let session = initial;
-  const adapter = charter.createAdapterIntegration({
-    name: 'execution-observer-adapter',
-    version: '1.0.0',
-    observeEnvironment: () => ({
-      ok: true,
-      observation: { target: 'parent', provider: 'fake-provider', model: MODEL, session_identity: session, runtime: 'fixture-runtime' },
-    }),
-  });
+  const adapter = createHostAuthorizedAdapterIntegration(
+    {
+      name: 'execution-observer-adapter',
+      version: '1.0.0',
+      observeEnvironment: () => ({
+        ok: true,
+        observation: {
+          target: 'parent',
+          provider: 'fake-provider',
+          model: MODEL,
+          session_identity: session,
+          runtime: 'fixture-runtime',
+        },
+      }),
+    },
+    HOST_ADAPTER_AUTHORITY,
+  );
   return { adapter, switchTo: (next: string): void => void (session = next) };
 }
 
 // ── P9 — a legitimate adapter integrates through the supported contract ────
 
-test('ADAPTER1 (P9) — an external adapter compiles and verifies through the public contract only', () => {
-  const adapter = fakeSubstrateAdapter();
+test('ADAPTER1 (P9) — an external adapter compiles and verifies through the supported contract only', () => {
+  const adapter = hostAdapter();
   const compiled = adapter.compile({ task_contract: contract(), authority_binder: AUTHORITY, model_profile: PROFILE });
   assert.equal(compiled.ok, true);
   if (!compiled.ok) return;
@@ -85,7 +140,7 @@ test('ADAPTER1 (P9) — an external adapter compiles and verifies through the pu
   // The adapter identity core issues under is the one the adapter registered, not a caller value.
   assert.equal(compiled.compiled.execution_contract.model_availability.class, 'attested');
   if (compiled.compiled.execution_contract.model_availability.class === 'attested') {
-    assert.equal(compiled.compiled.execution_contract.model_availability.source, 'external-fixture-adapter');
+    assert.equal(compiled.compiled.execution_contract.model_availability.source, 'host-authorized-fixture-adapter');
   }
 
   // Admission is not execution: the runtime owner reports that it actually executed the admitted
@@ -97,7 +152,7 @@ test('ADAPTER1 (P9) — an external adapter compiles and verifies through the pu
   assert.equal(verified.ok, true);
   if (!verified.ok) return;
   assert.equal(verified.verification.verdict, 'EXECUTION_CONFORMANT');
-  assert.deepEqual(verified.verification.substrate, { name: 'external-fixture-adapter', version: '9.9.9' });
+  assert.deepEqual(verified.verification.substrate, { name: 'host-authorized-fixture-adapter', version: '9.9.9' });
 });
 
 test('ADAPTER2 (P9) — a second adapter instance in the same process refuses a foreign handle shape', () => {
@@ -452,7 +507,7 @@ test('C1/C5 — no capability observer attests no capability, whatever the adapt
 });
 
 test('C2 — only an observed axis becomes trusted capability evidence', () => {
-  const adapter = fakeSubstrateAdapter(undefined, () => ({ ok: true, observed: { fresh_session: true } }));
+  const adapter = hostAdapter(undefined, () => ({ ok: true, observed: { fresh_session: true } }));
   // The observed axis is attested, so a contract requiring a fresh review session can compile...
   const reviewed = compileWith(adapter, freshSessionReviewContract());
   assert.equal(reviewed.ok, true);
@@ -486,7 +541,7 @@ test('C3 — an observed false stays false: it is never promoted, never softened
 });
 
 test('C4 — a partial observation attests its observed axes and leaves the rest unattested', () => {
-  const adapter = fakeSubstrateAdapter(undefined, () => ({
+  const adapter = hostAdapter(undefined, () => ({
     ok: true,
     observed: { model_selection: true, fresh_session: true, independent_review: true },
   }));
@@ -542,11 +597,265 @@ test('C8/C9 — the capability observation is usable through the public surface 
     ['model_selection', 'fresh_session', 'tool_ceiling', 'file_scope_enforcement', 'independent_review'],
   );
   // The Pi bridge observes no capability of its own (it does not own execution), so it still attests
-  // exactly the facts it observes: model and session, and no capability axis.
+  // exactly the facts it observes: model and session, and no capability axis. An ordinary adapter with
+  // the same callbacks attests neither: its observations are candidates (A1).
   const adapter = fakeSubstrateAdapter();
   const compiled = compileWith(adapter, executableContract());
   assert.equal(compiled.ok, true);
   if (!compiled.ok) return;
   assert.equal(compiled.compiled.target_binding.capability_evidence.class, 'unattested_claim');
-  assert.equal(compiled.compiled.execution_contract.model_availability.class, 'attested');
+  assert.equal(compiled.compiled.execution_contract.model_availability.class, 'unattested_claim');
+});
+
+// ── F3 A1–A10 — the host boundary, on the public surface ───────────────────
+
+/** An observation callback that reports the fixture runtime and nothing else. */
+const environment = (): charter.AdapterObservationResult => ({
+  ok: true,
+  observation: { ...FIXTURE_OBSERVATION, runtime: 'fixture-runtime' },
+});
+
+/** The capability axes a self-authorizing adapter would like to be trusted for. */
+const ALL_CAPABLE = {
+  model_selection: true,
+  fresh_session: true,
+  tool_ceiling: true,
+  file_scope_enforcement: true,
+  independent_review: true,
+} as const;
+
+test('A1 — an ordinary caller cannot self-authorize as a runtime adapter', () => {
+  const adapter = fakeSubstrateAdapter(undefined, () => ({ ok: true, observed: ALL_CAPABLE }));
+  const compiled = compileWith(adapter, contract({ execution_policy: { allowed_tools: ['read'] } }));
+  assert.equal(compiled.ok, true, 'the untrusted contract still compiles; it just proves nothing');
+  if (!compiled.ok) return;
+  // Observations stay candidates on both channels: no attested capability, no attested model.
+  assert.equal(compiled.compiled.target_binding.capability_evidence.class, 'unattested_claim');
+  assert.equal(compiled.compiled.execution_contract.model_availability.class, 'unattested_claim');
+  assert.equal(compiled.compiled.resolution_receipt.capability_evidence.class, 'unattested_claim');
+  // And no axis observed true reaches ENFORCED: the truth table has no ENFORCED entry at all.
+  const truths = Object.values(compiled.compiled.role_envelope.enforcement_truth);
+  assert.equal(truths.includes('ENFORCED'), false);
+  assert.equal(compiled.compiled.role_envelope.enforcement_truth.allowed_tools, 'INSTRUCTED');
+  // Anything the contract REQUIRES refuses, because nothing is attested.
+  const required = compileWith(adapter, enforcingContract());
+  assert.equal(required.ok, false);
+  if (required.ok) return;
+  assert.deepEqual([...new Set(required.errors.map((error) => error.code))], ['UNSUPPORTED_BY_EXECUTION_TARGET']);
+});
+
+test('A2 — names establish no authority', () => {
+  for (const name of ['pi-subagents', 'pi-charter', 'parent', 'host-authorized-fixture-adapter']) {
+    const adapter = charter.createAdapterIntegration({
+      name,
+      version: '1.0.0',
+      observeEnvironment: environment,
+      observeCapabilities: () => ({ ok: true, observed: { fresh_session: true, independent_review: true } }),
+    });
+    const plain = compileWith(adapter, executableContract());
+    assert.equal(plain.ok, true);
+    if (!plain.ok) return;
+    assert.equal(plain.compiled.target_binding.capability_evidence.class, 'unattested_claim', `${name} is a name, not a boundary`);
+    // The review contract needs trusted fresh_session + independent_review; a name supplies neither.
+    assert.equal(compileWith(adapter, freshSessionReviewContract('independent')).ok, false);
+  }
+});
+
+test('A3 — a host-authorized adapter reaches trusted capability evidence', () => {
+  const adapter = hostAdapter(undefined, () => ({ ok: true, observed: { fresh_session: true } }));
+  const reviewed = compileWith(adapter, freshSessionReviewContract());
+  assert.equal(reviewed.ok, true, 'a host-authorized observed fresh_session must support the required review');
+  if (!reviewed.ok) return;
+  assert.equal(reviewed.compiled.target_binding.capability_evidence.class, 'attested');
+});
+
+test('A4/A5 — observed false and omitted are different evidence, and neither is promoted', () => {
+  const falseAdapter = hostAdapter(undefined, () => ({ ok: true, observed: { model_selection: true, fresh_session: false } }));
+  const omittedAdapter = hostAdapter(undefined, () => ({ ok: true, observed: { model_selection: true } }));
+
+  const observedFalse = compileWith(falseAdapter, executableContract());
+  const omitted = compileWith(omittedAdapter, executableContract());
+  assert.equal(observedFalse.ok && omitted.ok, true);
+  if (!observedFalse.ok || !omitted.ok) return;
+
+  // Both are trusted observations, and they are not the same observation: `false` is present, omitted
+  // is absent, so the two carry different evidence identities.
+  assert.equal(observedFalse.compiled.target_binding.capability_evidence.class, 'attested');
+  assert.equal(omitted.compiled.target_binding.capability_evidence.class, 'attested');
+  assert.notEqual(
+    observedFalse.compiled.target_binding.capability_evidence.evidence_identity,
+    omitted.compiled.target_binding.capability_evidence.evidence_identity,
+    'an observed false must not carry the identity of an unobserved axis',
+  );
+
+  // The observed false is a trusted NEGATIVE observation: it fails closed where the contract needs it,
+  // and so does the omission — but the two are distinguishable above, which is the point.
+  const falseReview = compileWith(falseAdapter, freshSessionReviewContract());
+  const omittedReview = compileWith(omittedAdapter, freshSessionReviewContract());
+  assert.equal(falseReview.ok, false);
+  assert.equal(omittedReview.ok, false);
+  // The axis that WAS observed true is trusted in both cases.
+  assert.equal(observedFalse.compiled.target_binding.enforcement.model_selection, 'ENFORCED');
+  assert.equal(omitted.compiled.target_binding.enforcement.model_selection, 'ENFORCED');
+});
+
+test('A6 — partial observation: observed axes trusted, omitted axes unobserved', () => {
+  const partial = hostAdapter(undefined, () => ({
+    ok: true,
+    observed: { fresh_session: true, independent_review: true },
+  }));
+  const reviewed = compileWith(partial, freshSessionReviewContract('independent'));
+  assert.equal(reviewed.ok, true, 'both observed axes must support an independent fresh-session review');
+  if (!reviewed.ok) return;
+  assert.equal(reviewed.compiled.target_binding.capability_evidence.class, 'attested');
+  assert.equal(reviewed.compiled.target_binding.enforcement.model_selection, 'UNSUPPORTED', 'model_selection was never observed');
+  assert.equal(reviewed.compiled.target_binding.enforcement.allowed_files, 'INSTRUCTED', 'file policy without an observation stays weaker');
+
+  // Omitted axes are not inherited from their neighbours.
+  assert.equal(compileWith(partial, enforcingContract()).ok, false);
+  assert.equal(compileWith(partial, contract({ requirements: { enforcement: { allowed_files: 'required' } } })).ok, false);
+  const toolPolicy = compileWith(partial, contract({ execution_policy: { allowed_tools: ['read'] } }));
+  assert.equal(toolPolicy.ok, true);
+  if (!toolPolicy.ok) return;
+  assert.equal(toolPolicy.compiled.role_envelope.enforcement_truth.allowed_tools, 'INSTRUCTED');
+
+  // Observed true plus an applicable policy DOES reach ENFORCED, on the host-authorized path only.
+  const observed = hostAdapter(undefined, () => ({ ok: true, observed: { tool_ceiling: true, model_selection: true } }));
+  const enforced = compileWith(observed, contract({ execution_policy: { allowed_tools: ['read'] } }));
+  assert.equal(enforced.ok, true);
+  if (!enforced.ok) return;
+  assert.equal(enforced.compiled.role_envelope.enforcement_truth.allowed_tools, 'ENFORCED');
+  const model = compileWith(observed, executableContract());
+  assert.equal(model.ok, true);
+  if (!model.ok) return;
+  assert.equal(model.compiled.target_binding.enforcement.model_selection, 'ENFORCED');
+});
+
+test('A7 — trust flags, forged authority, unknown axes, and non-booleans are refused', () => {
+  // Trust cannot ride along as an integration option.
+  for (const flag of ['attested', 'trusted', 'verified']) {
+    assert.throws(
+      () =>
+        charter.createAdapterIntegration({
+          name: 'flag-adapter',
+          version: '1.0.0',
+          observeEnvironment: environment,
+          [flag]: true,
+        } as never),
+      TypeError,
+      `'${flag}' must not be an integration option`,
+    );
+  }
+  // Nor as an observation axis — on either path.
+  for (const flag of ['attested', 'trusted', 'verified']) {
+    for (const adapter of [
+      fakeSubstrateAdapter(undefined, () => ({ ok: true, observed: { [flag]: true } as never })),
+      hostAdapter(undefined, () => ({ ok: true, observed: { [flag]: true } as never })),
+    ]) {
+      const compiled = compileWith(adapter, executableContract());
+      assert.equal(compiled.ok, false, `'${flag}' must be refused as a capability axis`);
+      if (compiled.ok) return;
+      assert.equal(compiled.errors[0]?.path, 'capabilities');
+    }
+  }
+  // A non-boolean observation is refused rather than coerced.
+  const nonBoolean = hostAdapter(undefined, () => ({ ok: true, observed: { fresh_session: 'yes' } as never }));
+  assert.equal(compileWith(nonBoolean, executableContract()).ok, false);
+
+  // A host authorization that is not the capability this process minted is refused at construction: a
+  // record, a string, a copy, and an empty object are all just values.
+  for (const forged of [{ trusted: true }, 'host', 'pi-charter', 42, { ...HOST_ADAPTER_AUTHORITY }]) {
+    assert.throws(
+      () => createHostAuthorizedAdapterIntegration(adapterOptions('forged-authority-adapter'), forged),
+      TypeError,
+      `a submitted ${typeof forged} must not occupy the host position`,
+    );
+  }
+});
+
+test('A8 — an untrusted adapter cannot attest the model, provider, or session it declares', () => {
+  const adapter = fakeSubstrateAdapter({ ...FIXTURE_OBSERVATION, provider: 'fake', model: 'fake-model', session_identity: 'fake-session' });
+  const compiled = adapter.compile({
+    task_contract: executableContract(),
+    authority_binder: AUTHORITY,
+    model_profile: profileFor('fake-model'),
+  });
+  assert.equal(compiled.ok, true);
+  if (!compiled.ok) return;
+  assert.equal(compiled.compiled.execution_contract.model_availability.class, 'unattested_claim');
+  assert.equal(compiled.compiled.resolution_receipt.model_availability_evidence.class, 'unattested_claim');
+
+  // The run is reported as it observed it, and verified as evidence that was never issued: the
+  // declared session and model are not promoted into execution truth.
+  assert.equal(adapter.observeExecution({ execution_handle: compiled.execution_handle }).ok, true);
+  const verified = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
+  assert.equal(verified.ok, true);
+  if (!verified.ok) return;
+  assert.equal(verified.verification.verdict, 'NON_CONFORMANT');
+  assert.deepEqual(verified.verification.deviations.map((deviation) => deviation.code), ['UNTRUSTED_EXECUTION_EVIDENCE']);
+
+  // The same observation on the host-authorized path IS issued evidence — the position decides.
+  const authorized = hostAdapter({ ...FIXTURE_OBSERVATION, provider: 'fake', model: 'fake-model', session_identity: 'fake-session' });
+  const authorizedCompiled = authorized.compile({
+    task_contract: executableContract(),
+    authority_binder: AUTHORITY,
+    model_profile: profileFor('fake-model'),
+  });
+  assert.equal(authorizedCompiled.ok, true);
+  if (!authorizedCompiled.ok) return;
+  assert.equal(authorizedCompiled.compiled.execution_contract.model_availability.class, 'attested');
+  assert.equal(authorized.observeExecution({ execution_handle: authorizedCompiled.execution_handle }).ok, true);
+  const authorizedVerified = authorized.verifyExecution({ execution_handle: authorizedCompiled.execution_handle });
+  assert.equal(authorizedVerified.ok, true);
+  if (!authorizedVerified.ok) return;
+  assert.equal(authorizedVerified.verification.verdict, 'EXECUTION_CONFORMANT');
+});
+
+test('A9 — the package-wired runtime integration produces trusted truth and no unobserved capability', () => {
+  const previous = {
+    PI_PROVIDER: process.env.PI_PROVIDER,
+    PI_MODEL: process.env.PI_MODEL,
+    PI_SESSION_ID: process.env.PI_SESSION_ID,
+  };
+  process.env.PI_PROVIDER = 'pi-provider-fixture';
+  process.env.PI_MODEL = MODEL;
+  process.env.PI_SESSION_ID = 'pi-session-fixture';
+  try {
+    const compiled = charter.compileViaPi({
+      task_contract: executableContract(),
+      authority_binder: AUTHORITY,
+      model_profile: PROFILE,
+    });
+    assert.equal(compiled.ok, true, 'the bridge is the host-authorized runtime integration');
+    if (!compiled.ok) return;
+    assert.equal(compiled.compiled.execution_contract.model_availability.class, 'attested');
+    assert.equal(compiled.compiled.resolution_receipt.model_availability_evidence.class, 'attested');
+    // It observes no capability axis of its own, so none becomes trusted capability evidence.
+    assert.equal(compiled.compiled.target_binding.capability_evidence.class, 'unattested_claim');
+    assert.equal(
+      Object.values(compiled.compiled.role_envelope.enforcement_truth).includes('ENFORCED'),
+      false,
+      'no unobserved capability may become trusted',
+    );
+  } finally {
+    for (const [key, value] of Object.entries(previous)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+});
+
+test('A10 — the host authority and the raw trust minters are not on the package surface', () => {
+  for (const name of [
+    'createHostAuthorizedAdapterIntegration',
+    'isHostAdapterAuthority',
+    'HOST_ADAPTER_AUTHORITY',
+    'createAttestationVerifier',
+    'markIssuedAttestationVerifier',
+    'createExecutionAttestationIssuer',
+  ]) {
+    assert.equal(name in charter, false, `'${name}' must not be reachable from the package entry point`);
+  }
+  // The one adapter operation that IS public is the ordinary, untrusted one.
+  assert.equal(typeof charter.createAdapterIntegration, 'function');
 });

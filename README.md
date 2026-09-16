@@ -464,6 +464,17 @@ JSON roundtrip — is refused as `UNTRUSTED_EXECUTION_EVIDENCE`. The Pi bridge i
 the session it runs in; an integration that owns a subagents runtime issues it through its own
 adapter. Charter stores no session, run, or workflow state to remember it.
 
+**Observing a runtime is not owning it.** The adapter contract distinguishes the two positions
+explicitly (F3). An adapter an ordinary package caller constructs with `createAdapterIntegration`
+compiles with CANDIDATE evidence — unattested capability over exactly the axes it observed, an
+availability claim instead of a model inventory, and `NON_CONFORMANT` +
+`UNTRUSTED_EXECUTION_EVIDENCE` instead of issued execution evidence — and no axis it observes true can
+reach `ENFORCED`. Only the host-authorized adapter context, held by the runtime integration the
+package itself wires (the Pi bridge and the installed Pi extension) through an in-process capability
+that is not exported from the package surface, has its observations promoted into trusted evidence. No
+name — `pi-charter`, `pi-subagents`, `parent`, or a file called `pi-charter.ts` — grants that position,
+and observed `true`, observed `false`, and omitted remain three distinct observations end to end.
+
 **Execution conformance requires the exact artifact link and an observed execution.** Issuing evidence
 about a run is not the same as proving which governance artifact that run was admitted for, and an
 admission is not the same as a run. `compileViaPi` (and every adapter integration) admits the compiled

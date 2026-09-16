@@ -14,9 +14,13 @@
  *   not from caller-supplied tool arguments. The tool parameters carry a contract and an authority
  *   reference — never environment evidence.
  *
- *   It hands out no trust. The tool calls the supported adapter contract, which promotes the observed
- *   facts into trusted evidence; the LLM-facing arguments have no capability booleans, no model
- *   inventory, no trust boundary, and no way to mint attestations. Execution verification requires the
+ *   It hands out no trust. The tool calls the supported adapter contract from the HOST-AUTHORIZED
+ *   position, which promotes the observed facts into trusted evidence; the LLM-facing arguments have no
+ *   capability booleans, no model inventory, no trust boundary, and no way to mint attestations. The
+ *   authorization is a capability this extension holds because it IS the runtime integration installed
+ *   by the package (`package.json` declares `pi.extensions`), not because of what the file is called:
+ *   it passes the opaque authority minted by `dist/integration/adapter-integration.js`, which no
+ *   ordinary package consumer can reach from the package surface. Execution verification requires the
  *   opaque handle the compile admitted AND an observed execution of it: passing artifacts at
  *   verification time cannot substitute, and neither can calling verify immediately after compile.
  *
@@ -34,7 +38,14 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
-import { MODEL_TIERS, createAdapterIntegration, createAuthorityBinder } from '../dist/index.js';
+import { MODEL_TIERS, createAuthorityBinder } from '../dist/index.js';
+// The host seam: this extension is the runtime integration the package ships and Pi loads, so it — and
+// not any ordinary consumer of the package — holds the adapter authority capability. The module it
+// comes from is deliberately not re-exported by `dist/index.js`.
+import {
+  createHostAuthorizedAdapterIntegration,
+  HOST_ADAPTER_AUTHORITY,
+} from '../dist/integration/adapter-integration.js';
 
 /** A plain JSON-schema-shaped parameter definition, as Pi's tool registration expects. */
 type ToolParameters = Readonly<Record<string, unknown>>;
@@ -181,11 +192,14 @@ function observeSession(ctx: PiExtensionContext | undefined): ObservedSession | 
 function integrationFor(observation: ObservedSession) {
   const version = readAdapterVersion();
   if (version === undefined) return undefined;
-  return createAdapterIntegration({
-    name: ADAPTER_NAME,
-    version,
-    observeEnvironment: () => ({ ok: true, observation: observation.observation }),
-  });
+  return createHostAuthorizedAdapterIntegration(
+    {
+      name: ADAPTER_NAME,
+      version,
+      observeEnvironment: () => ({ ok: true, observation: observation.observation }),
+    },
+    HOST_ADAPTER_AUTHORITY,
+  );
 }
 
 function text(value: string): { content: { type: 'text'; text: string }[]; details: Record<string, unknown> } {

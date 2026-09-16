@@ -80,8 +80,29 @@ export type {
 } from './core/execution/execution-attestation.ts';
 export * from './core/compile/compile-for-target.ts';
 export * from './bridge/pi-bridge.ts';
-// Final correction (F1/F3): the one supported adapter-facing integration contract. An external
-// substrate adapter registers observations and core promotes them into trusted evidence; compile-time
-// admission handles carry the exact execution artifact link. The raw execution-evidence issuer, the
-// attestation verifier factory, and the process-local boundary stores stay absent from this surface.
-export * from './integration/adapter-integration.ts';
+// Final correction (F1/F3): the one supported adapter-facing integration contract. An adapter reports
+// observations; whether those observations are CANDIDATES or trusted evidence is decided by the host
+// authorization capability, and this surface admits exactly the ordinary (untrusted) integration plus
+// the observation vocabulary. `createHostAuthorizedAdapterIntegration`, `HOST_ADAPTER_AUTHORITY`, and
+// `isHostAdapterAuthority` are deliberately absent: the runtime integration the package itself wires
+// holds the host capability, and no caller can obtain one by importing the package. The raw
+// execution-evidence issuer, the attestation verifier factory, and the process-local boundary stores
+// stay absent for the same reason.
+export {
+  createAdapterIntegration,
+} from './integration/adapter-integration.ts';
+export type {
+  AdapterCapabilityObservation,
+  AdapterCapabilityObservationResult,
+  AdapterCompileInput,
+  AdapterCompileResult,
+  AdapterCompileSuccess,
+  AdapterEnvironmentObservation,
+  AdapterExecutionObservationInput,
+  AdapterExecutionObservationResult,
+  AdapterExecutionVerificationInput,
+  AdapterExecutionVerificationResult,
+  AdapterIntegration,
+  AdapterIntegrationOptions,
+  AdapterObservationResult,
+} from './integration/adapter-integration.ts';

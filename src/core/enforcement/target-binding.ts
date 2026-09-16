@@ -248,9 +248,14 @@ type Err = (code: CharterErrorCode, path: string, message: string) => void;
  * `model_selection` is `UNSUPPORTED` rather than `INSTRUCTED` because no prompt guidance can change
  * which model actually executes. Archaeology and release are reported `INSTRUCTED` because a prompt
  * instruction genuinely does reach the target — the target simply cannot prove compliance (§34, §24).
+ *
+ * A capability axis that was never OBSERVED is not an observed `false` (F3 tri-state): it is absent
+ * from the evidence, and it reads here as the weaker state — a policy with no trusted observation is
+ * `INSTRUCTED`, an unobserved `model_selection` is `UNSUPPORTED`. Omission is never promoted, and it
+ * is never rewritten as a negative observation either.
  */
 export function evaluateEnforcement(
-  capabilities: ExecutionTargetCapabilities | undefined,
+  capabilities: Partial<ExecutionTargetCapabilities> | undefined,
   policy: EnforcementPolicy,
 ): EnforcementTruthTable {
   return {
@@ -363,7 +368,7 @@ export function bindExecutionTarget(input: TargetBindingInput): TargetBindingRes
   const target = contract.execution_target;
 
   // Capability truth comes from one of two channels, and neither is trusted by shape.
-  let capabilities: ExecutionTargetCapabilities | undefined;
+  let capabilities: Partial<ExecutionTargetCapabilities> | undefined;
   let capabilityEvidence: EnvironmentEvidence | undefined;
   if (hasClaim) {
     const claim = checkClaim(raw.capability_claim, target, err);
@@ -486,7 +491,9 @@ function checkClaim(claim: unknown, target: ExecutionTargetName, err: Err): Capa
 
 /**
  * Validate a submitted capability attestation candidate fail-closed: an admitted source kind, a
- * declared source identity, and a canonical payload naming this exact target with every axis stated.
+ * declared source identity, and a canonical payload naming this exact target. Every axis the payload
+ * STATES must be a boolean; an axis it does not state was never observed and stays absent rather than
+ * being defaulted to `false` (F3 tri-state).
  *
  * Validation settles the SHAPE. Capability truth settles on the verifier: the axes are returned only
  * when the evidence the boundary produced is `attested`, so an unvouched candidate yields no trusted
@@ -497,7 +504,7 @@ function checkCapabilityAttestationCandidate(
   target: ExecutionTargetName,
   verifier: AttestationVerifier | undefined,
   err: Err,
-): { capabilities: ExecutionTargetCapabilities | undefined; evidence: EnvironmentEvidence } | undefined {
+): { capabilities: Partial<ExecutionTargetCapabilities> | undefined; evidence: EnvironmentEvidence } | undefined {
   const candidate = checkAttestationCandidate(raw, 'capability_attestation', 'execution_adapter', err);
   if (candidate === undefined) return undefined;
   const payload = candidate.payload;
@@ -522,7 +529,7 @@ function checkCapabilityAttestationCandidate(
     );
     return undefined;
   }
-  const axes = checkCapabilityAxes(payload.capabilities, 'capability_attestation.payload.capabilities', err);
+  const axes = checkObservedCapabilityAxes(payload.capabilities, 'capability_attestation.payload.capabilities', err);
   if (axes === undefined) return undefined;
   const evidence = resolveAttestationEvidence(candidate, verifier);
   if (!evidence.ok) {
@@ -567,6 +574,35 @@ function checkCapabilityAxes(
     }
   }
   return complete ? (raw as ExecutionTargetCapabilities) : undefined;
+}
+
+/**
+ * Validate the axes an attestation OBSERVED (F3 tri-state). A stated axis must be a boolean; an absent
+ * axis was NOT observed and stays absent, so it is never read as an observed `false` and never
+ * promoted as an observed `true`. An empty set is a truthful statement in itself: nothing was observed,
+ * so nothing is attested.
+ */
+function checkObservedCapabilityAxes(
+  raw: unknown,
+  path: string,
+  err: Err,
+): Partial<ExecutionTargetCapabilities> | undefined {
+  if (!isRecord(raw)) {
+    err('INVALID_TASK_CONTRACT', path, `${path} must be an object`);
+    return undefined;
+  }
+  checkUnknownKeys(raw, TARGET_CAPABILITY_KEYS, path, err);
+  const observed: Partial<ExecutionTargetCapabilities> = {};
+  for (const key of TARGET_CAPABILITY_KEYS) {
+    const value = raw[key];
+    if (value === undefined) continue;
+    if (typeof value !== 'boolean') {
+      err('INVALID_TASK_CONTRACT', `${path}.${key}`, `capability '${key}' must be an observed boolean`);
+      return undefined;
+    }
+    observed[key] = value;
+  }
+  return observed;
 }
 
 /**
@@ -675,7 +711,7 @@ function checkRequiredEnforcement(
  */
 function checkReviewCapability(
   acceptance: unknown,
-  capabilities: ExecutionTargetCapabilities | undefined,
+  capabilities: Partial<ExecutionTargetCapabilities> | undefined,
   target: ExecutionTargetName,
   err: Err,
 ): void {

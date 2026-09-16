@@ -14,11 +14,31 @@
  * `createAttestationVerifier`, `createExecutionAttestationIssuer`, or any other internal minter: it
  * returns what it can actually see — which runtime it is, provider/model, session identity, runtime
  * version, and which capability dimensions it observed its own runtime hard-enforcing — and core
- * converts exactly that into trusted evidence. It may not attest what it does not observe, because
- * there is no input through which it could: capability booleans, model inventories, trust
- * boundaries, `attested: true`, and unknown capability axes are all refused by name. An adapter that
- * supplies no capability observer still attests no capability at all, exactly as before, and an axis
- * it did not observe is recorded as not-capable rather than as an attested primitive.
+ * converts exactly that into evidence. It may not attest what it does not observe, because there is
+ * no input through which it could: capability booleans, model inventories, trust boundaries,
+ * `attested: true`, and unknown capability axes are all refused by name. An adapter that supplies no
+ * capability observer still attests no capability at all, and an axis it did not observe attests
+ * nothing rather than being recorded as an observed `false`.
+ *
+ * The second half of the correction is that supplying observations is not the same trust position as
+ * owning the runtime, and this module does not pretend otherwise:
+ *
+ *   ordinary package caller
+ *     createAdapterIntegration({ ...callbacks })
+ *     → observations are CANDIDATES: unattested capability evidence over exactly the axes the adapter
+ *       observed, an availability claim instead of a model inventory, and a NON_CONFORMANT
+ *       `UNTRUSTED_EXECUTION_EVIDENCE` verdict rather than issued execution evidence
+ *
+ *   runtime integration the package wires (the Pi bridge, the installed Pi extension)
+ *     createHostAuthorizedAdapterIntegration({ ...callbacks }, HOST_ADAPTER_AUTHORITY)
+ *     → the same observations cross the host boundary and core promotes them into attested evidence
+ *
+ * The host position is a CAPABILITY, not a parameter: an opaque object minted once in this process and
+ * recognised by process-local identity in a store this module does not export from `index.ts`. A
+ * submitted record, string, copy, clone, or JSON roundtrip of it is refused, and no adapter name —
+ * `pi-charter`, `pi-subagents`, `parent`, or a file called `pi-charter.ts` — establishes it (F3).
+ * Observing the environment is not authorizing it: the callback an untrusted adapter supplies and the
+ * callback the Pi extension supplies have the same shape, and only the second is host-authorized.
  *
  * F1 — the execution artifact link. Before this correction, `verifyExecutionViaPi` copied the
  * receipt/contract/envelope identities out of the artifacts a caller handed it at verification time
@@ -66,6 +86,7 @@ import {
 import type { RoleEnvelope } from '../core/envelopes/role-envelope.ts';
 import {
   createExecutionAttestationIssuer,
+  EXECUTION_ATTESTATION_VERSION,
   verifyExecutionAttestation,
   type ExecutionVerificationResult,
 } from '../core/execution/execution-attestation.ts';
@@ -99,6 +120,12 @@ export type AdapterObservationResult =
  * and an OMITTED axis means it observed nothing about that dimension and therefore attests nothing.
  * The adapter states what it saw. It never states trust, and it cannot: there is no `attested` field,
  * and an axis this object does not name is never recorded as an attested primitive.
+ *
+ * The three states stay three states all the way into evidence (F3): an axis observed `true` becomes a
+ * trusted positive observation, an axis observed `false` becomes a trusted NEGATIVE observation, and
+ * an omitted axis becomes no observation at all. Omission is never rewritten as an observed `false`,
+ * so `{ fresh_session: false }` and `{}` carry different evidence identities, and neither can ground
+ * `ENFORCED`.
  */
 export type AdapterCapabilityObservation = Partial<Record<TargetCapabilityKey, boolean>>;
 
@@ -109,10 +136,11 @@ export type AdapterCapabilityObservationResult =
 /**
  * The supported adapter registration contract.
  *
- * The adapter provides its identity and its observation callbacks. Core calls them on every operation,
- * promotes the returned observations into trusted evidence, and issues nothing else. The adapter holds
- * no minter, no boundary store, and no trust capability: the constrained issuance context it may use
- * is these callbacks.
+ * The adapter provides its identity and its observation callbacks. Core calls them on every operation
+ * and converts the returned observations into evidence. The adapter holds no minter, no boundary store,
+ * and no trust capability: the constrained issuance context it may use is these callbacks, and what
+ * those observations are worth is decided by which integration path created it — an ordinary caller
+ * gets candidates, the host-authorized path gets trusted evidence (F3).
  */
 export interface AdapterIntegrationOptions {
   /** Adapter component name. It is the substrate identity every attestation it causes will carry. */
@@ -128,7 +156,8 @@ export interface AdapterIntegrationOptions {
    * Report only the capability dimensions this adapter actually observed about its own runtime.
    * Absent means capabilities are not observed at all and none is attested. Every observation is a
    * fact about a runtime, never a trust flag, so no axis can become trusted capability evidence
-   * without an observation of `true` here, and core still owns that promotion.
+   * without an observation of `true` here, and core still owns that promotion — which only a
+   * host-authorized integration may reach.
    */
   readonly observeCapabilities?: () => AdapterCapabilityObservationResult;
 }
@@ -195,9 +224,20 @@ export type AdapterExecutionVerificationResult =
   | { ok: true; verification: ExecutionVerificationResult; observation: AdapterEnvironmentObservation }
   | { ok: false; reason: string };
 
+// (The `ok: false` channel is the integration's own refusal — a foreign handle, an unusable
+// observation, a session that is not the observed run. It is not the verdict channel: an ordinary
+// integration still answers `ok: true` for an observed execution of the admitted artifact set, with
+// `NON_CONFORMANT` and `UNTRUSTED_EXECUTION_EVIDENCE` in the verification, because those observations
+// were never host-authorized.)
+
 /**
  * The narrow adapter-facing surface. Three operations, no lifecycle, no generic trust minter: admit
  * an artifact set, report that the runtime executed it, and verify a run against it.
+ *
+ * What the operations RETURN depends on the integration's trust position and on nothing else: an
+ * ordinary integration compiles with unattested evidence and verifies runs as untrusted execution
+ * evidence, while a host-authorized one may have its observations promoted (F3). Neither holds a
+ * minter, and neither can reach the other's position by anything it supplies.
  */
 export interface AdapterIntegration {
   compile(input: unknown): AdapterCompileResult;
@@ -283,6 +323,9 @@ const COMPILE_INPUT_KEYS = [
 /** The one admitted input of an execution observation: the handle, and nothing a caller can assert. */
 const EXECUTION_OBSERVATION_KEYS = ['execution_handle'] as const;
 
+/** The adapter identity fields, and nothing else: trust is not a registration option. */
+const ADAPTER_OPTION_KEYS = ['name', 'version', 'observeEnvironment', 'observeCapabilities'] as const;
+
 const EXECUTION_VERIFICATION_KEYS = [
   'execution_handle',
   'resolution_receipt',
@@ -290,23 +333,86 @@ const EXECUTION_VERIFICATION_KEYS = [
   'execution_contract',
 ] as const;
 
+// ── The host adapter-authority capability (F3) ──────────────────────────────
+
+/** Opaque host authorization. It carries no data; only process-local identity makes it authorization. */
+export interface HostAdapterAuthority {
+  /** Present in the type system only, so no caller-supplied shape can satisfy the position. */
+  readonly __host_adapter_authority: unique symbol;
+}
+
+const HOST_ADAPTER_AUTHORITIES = new WeakSet<object>();
+
 /**
- * Create the one supported adapter integration.
- *
- * Fail-closed at construction for a malformed adapter identity, and fail-closed at every operation
- * for an adapter whose observation is unusable. Nothing here schedules, spawns, retries, or persists:
- * the integration owns one observation callback and one bounded process-local admission map.
+ * The host adapter authority this process minted. NOT PACKAGE SURFACE: `index.ts` re-exports the
+ * adapter contract below and deliberately not this value, so a caller reaching it has reached inside
+ * the package rather than through its surface. The integration the package itself wires holds it.
+ */
+export const HOST_ADAPTER_AUTHORITY: HostAdapterAuthority = Object.freeze(
+  ((): HostAdapterAuthority => {
+    const authority = {} as HostAdapterAuthority;
+    HOST_ADAPTER_AUTHORITIES.add(authority);
+    return authority;
+  })(),
+);
+
+/**
+ * True only for the authority object this process minted. Nothing about a supplied value's contents is
+ * read as authorization, so a record-shaped token, a string, a spread copy, a clone, and a parsed
+ * envelope all fail this check and are refused rather than trusted.
+ */
+export function isHostAdapterAuthority(value: unknown): value is HostAdapterAuthority {
+  return typeof value === 'object' && value !== null && HOST_ADAPTER_AUTHORITIES.has(value);
+}
+
+/**
+ * Create the ordinary adapter integration. Its observations are CANDIDATES: core records them as
+ * unattested evidence, and no run it reports verifies as trusted execution (F3).
  */
 export function createAdapterIntegration(options: AdapterIntegrationOptions): AdapterIntegration {
+  return buildAdapterIntegration(options, false);
+}
+
+/**
+ * Create a HOST-AUTHORIZED adapter integration, or refuse (F3).
+ *
+ * NOT PACKAGE SURFACE. This is the host seam the runtime integration the package itself wires — the Pi
+ * bridge, the installed Pi extension — goes through, and the authority check is the gate: without the
+ * capability this process minted an integration is not host-authorized, however plausible the value
+ * handed in, and its observations stay candidates.
+ */
+export function createHostAuthorizedAdapterIntegration(
+  options: AdapterIntegrationOptions,
+  authority: unknown,
+): AdapterIntegration {
+  if (!isHostAdapterAuthority(authority)) {
+    throw new TypeError(
+      'a host-authorized adapter integration requires the host adapter authority this process minted; a submitted value, a copy, or a plain object is not a host-authorized adapter context',
+    );
+  }
+  return buildAdapterIntegration(options, true);
+}
+
+/**
+ * Build one adapter integration. `hostAuthorized` is decided by the two callers above and never by
+ * input.
+ *
+ * Fail-closed at construction for a malformed adapter identity and for an unknown option (so no trust
+ * flag can ride along as a field), and fail-closed at every operation for an adapter whose observation
+ * is unusable. Nothing here schedules, spawns, retries, or persists: the integration owns one
+ * observation callback and one bounded process-local admission map.
+ */
+function buildAdapterIntegration(options: AdapterIntegrationOptions, hostAuthorized: boolean): AdapterIntegration {
   if (
     !isRecord(options) ||
     !isNonEmptyString(options.name) ||
     typeof options.version !== 'string' ||
     typeof options.observeEnvironment !== 'function' ||
-    (options.observeCapabilities !== undefined && typeof options.observeCapabilities !== 'function')
+    (options.observeCapabilities !== undefined && typeof options.observeCapabilities !== 'function') ||
+    Object.keys(options).some((key) => !(ADAPTER_OPTION_KEYS as readonly string[]).includes(key))
   ) {
     throw new TypeError(
-      'createAdapterIntegration requires { name, version, observeEnvironment, observeCapabilities? }: an adapter must name itself and report what it can observe',
+      'createAdapterIntegration requires { name, version, observeEnvironment, observeCapabilities? }: an adapter must name itself and report what it can observe, and it may not supply trust as a field',
     );
   }
   const substrate = Object.freeze({ name: options.name.trim(), version: options.version });
@@ -362,37 +468,47 @@ export function createAdapterIntegration(options: AdapterIntegrationOptions): Ad
         };
       }
 
-      // Observed: the model this runtime actually reports as active. Issued through the Wave 1
-      // exact-issuance verifier, which vouches for precisely this attestation and nothing else.
+      // Observed: the model this runtime actually reports as active. The host-authorized path issues it
+      // through the Wave 1 exact-issuance verifier, which vouches for precisely this attestation and
+      // nothing else. An ordinary integration holds no such boundary and submits the availability CLAIM
+      // it is, so a caller-created adapter cannot attest a provider/model it merely declared (F3, H2).
       const modelInventory = {
         source_kind: 'model_registry' as const,
         source: substrate.name,
         payload: { models: [observed.model] },
       };
-      // The adapter's own observation, or no capability at all. An axis the adapter observed true is
-      // recorded true; an axis it observed false, and an axis it did not observe, are both recorded
-      // not-capable — so no dimension can ever be reported ENFORCED from something nobody observed.
-      // A target name, an adapter name, and a source name never imply a capability: this object is
-      // built from the adapter's observations alone and from nothing else.
-      const capabilityAxes = Object.fromEntries(
-        TARGET_CAPABILITY_KEYS.map((axis) => [axis, capabilities.observed?.[axis] === true] as const),
-      ) as Record<TargetCapabilityKey, boolean>;
-      // Core promotes the observations into ONE attested capability payload; the adapter never sees
-      // the boundary that vouches for it, and a caller cannot supply either half of this pair.
-      const capabilityAttestation = {
+      const modelEvidence = hostAuthorized
+        ? {
+            model_availability_attestation: modelInventory,
+            model_availability_attestation_verifier: createAttestationVerifier([modelInventory]),
+          }
+        : { available: [observed.model] };
+
+      // Only the axes the adapter actually OBSERVED, exactly as it observed them: a true observation is
+      // present and true, a false observation is present and false, and an omitted axis is simply
+      // absent. Nothing fills an unobserved axis in, so omission never becomes an observed `false` and
+      // the two carry different evidence identities (F3 tri-state). A target name, an adapter name, and
+      // a source name never imply a capability: this object is built from the adapter's observations
+      // alone and from nothing else.
+      const observedCapabilityAxes: AdapterCapabilityObservation = { ...(capabilities.observed ?? {}) };
+      // Core promotes the observations into ONE capability payload; the adapter never sees the boundary
+      // that vouches for it, and a caller cannot supply either half of this pair.
+      const capabilityCandidate = {
         source_kind: 'execution_adapter' as const,
         source: substrate.name,
-        payload: { target: observed.target, capabilities: capabilityAxes },
+        payload: { target: observed.target, capabilities: observedCapabilityAxes },
       };
+      // A capability observer on the host-authorized path is the only place a boundary exists to vouch
+      // for those observations. Everywhere else they stay exactly what they are — a candidate nobody
+      // vouched for — and core records them as the unattested claim they are: no observed capability
+      // reaches ENFORCED, however many axes the adapter observed true.
       const capabilityEvidence =
-        capabilities.observed === undefined
-          ? // No observer: the truthful statement is that nothing is attested, and it is recorded as
-            // the unattested claim it is rather than as unavailable evidence.
-            { capability_claim: { name: observed.target, capabilities: capabilityAxes } }
-          : {
-              capability_attestation: capabilityAttestation,
-              capability_attestation_verifier: createAttestationVerifier([capabilityAttestation]),
-            };
+        hostAuthorized && capabilities.observed !== undefined
+          ? {
+              capability_attestation: capabilityCandidate,
+              capability_attestation_verifier: createAttestationVerifier([capabilityCandidate]),
+            }
+          : { capability_attestation: capabilityCandidate };
 
       const compiled = compileForTarget({
         task_contract: input.task_contract as TaskContract,
@@ -402,8 +518,7 @@ export function createAdapterIntegration(options: AdapterIntegrationOptions): Ad
           ? { correction_binder: input.correction_binder as CorrectionAuthorityBinder }
           : {}),
         model_profile: input.model_profile as ModelProfile,
-        model_availability_attestation: modelInventory,
-        model_availability_attestation_verifier: createAttestationVerifier([modelInventory]),
+        ...modelEvidence,
         ...capabilityEvidence,
       });
       if (!compiled.ok) return { ok: false, errors: compiled.errors };
@@ -521,27 +636,40 @@ export function createAdapterIntegration(options: AdapterIntegrationOptions): Ad
       // artifacts handed in with this call, and never the model or session this verification happens
       // to be looking at. The supplied artifacts are what the verifier compares against that
       // evidence, so an artifact that was not the admitted one is reported as a deviation, not obeyed.
-      const issuer = createExecutionAttestationIssuer(substrate);
-      const issued = issuer.issue({
+      //
+      // Whether that evidence is TRUSTED is the host boundary's decision, not this call's: the
+      // host-authorized path issues it through the substrate boundary, and an ordinary integration
+      // submits the same observations as the un-issued candidate they are, which verification reports
+      // as NON_CONFORMANT with UNTRUSTED_EXECUTION_EVIDENCE rather than promoting a declared session
+      // and model into issued evidence (F3).
+      const runObservations = {
         resolution_receipt_identity: admission.receipt_identity,
         execution_contract_identity: admission.execution_contract_identity,
         role_envelope_identity: admission.role_envelope_identity,
         execution_target: admission.execution_target,
         model: executed.model,
         session: { session_identity: executed.session_identity },
-      });
-      if (!issued.ok) {
-        return {
-          ok: false,
-          reason: `this integration could not issue execution evidence for the observed session (${issued.errors[0]?.message ?? 'unknown reason'})`,
-        };
+      };
+      let executionAttestation: unknown;
+      if (hostAuthorized) {
+        const issued = createExecutionAttestationIssuer(substrate).issue(runObservations);
+        if (!issued.ok) {
+          return {
+            ok: false,
+            reason: `this integration could not issue execution evidence for the observed session (${issued.errors[0]?.message ?? 'unknown reason'})`,
+          };
+        }
+        executionAttestation = issued.attestation;
+      } else {
+        const payload = { version: EXECUTION_ATTESTATION_VERSION, ...runObservations };
+        executionAttestation = { ...payload, substrate, attestation_identity: evidenceIdentity(payload) };
       }
 
       return {
         ok: true,
         observation: observed,
         verification: verifyExecutionAttestation({
-          execution_attestation: issued.attestation,
+          execution_attestation: executionAttestation,
           resolution_receipt: receipt,
           role_envelope: envelope,
           execution_contract: contract,

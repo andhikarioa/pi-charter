@@ -19,6 +19,12 @@
  * booleans, a model list, or a source name into it, so nothing a caller can supply becomes attested
  * environment truth (H2, T2).
  *
+ * This bridge is also one of the two runtime integrations the package itself wires, so it holds the
+ * host adapter authority and its observations may cross into trusted evidence (F3). That position is
+ * NOT inferred from this file's name or from any label: the bridge hands the contract the capability
+ * this process minted, which no ordinary caller can obtain from the package surface, while an adapter
+ * a caller constructs without it stays a candidate path with no attested environment truth.
+ *
  * The execution artifact link (F1) is carried by the compile-time admission handle plus the observed
  * execution event. `compileViaPi` returns the handle; `observeExecutionViaPi` is where the runtime
  * owner reports that the admitted artifact set actually ran, and `verifyExecutionViaPi` refuses to
@@ -54,7 +60,8 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createAdapterIntegration,
+  createHostAuthorizedAdapterIntegration,
+  HOST_ADAPTER_AUTHORITY,
   type AdapterCompileInput,
   type AdapterCompileResult,
   type AdapterEnvironmentObservation,
@@ -146,14 +153,17 @@ function piIntegration(): AdapterIntegration | { reason: string } {
   if (identity === undefined) {
     return { reason: 'this bridge cannot read its own package identity, so it cannot attribute evidence it issues' };
   }
-  return createAdapterIntegration({
-    name: identity.name,
-    version: identity.version,
-    observeEnvironment: () => {
-      const observation = observePiEnvironment();
-      return observation.ok ? { ok: true, observation: observation.observation } : { ok: false, reason: observation.reason };
+  return createHostAuthorizedAdapterIntegration(
+    {
+      name: identity.name,
+      version: identity.version,
+      observeEnvironment: () => {
+        const observation = observePiEnvironment();
+        return observation.ok ? { ok: true, observation: observation.observation } : { ok: false, reason: observation.reason };
+      },
     },
-  });
+    HOST_ADAPTER_AUTHORITY,
+  );
 }
 
 // ── compile ─────────────────────────────────────────────────────────────────

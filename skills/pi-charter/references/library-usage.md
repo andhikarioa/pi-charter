@@ -146,8 +146,8 @@ const verdict = verifyExecutionAttestation({
 
 ## Adapter integration — for a substrate that owns its runtime
 
-A legitimate adapter integrates through the supported public contract. It supplies OBSERVATIONS; core
-owns TRUST PROMOTION. The adapter never sees an issuer, a verifier factory, or a boundary store:
+A substrate adapter integrates through the supported public contract. It supplies OBSERVATIONS; core
+records them. The adapter never sees an issuer, a verifier factory, or a boundary store:
 
 ```ts
 import { createAdapterIntegration } from 'pi-charter';
@@ -165,7 +165,7 @@ const adapter = createAdapterIntegration({
       runtime: process.version,
     },
   }),
-  // Report ONLY what this adapter observed about its own runtime. Omitted axes stay unattested.
+  // Report ONLY what this adapter observed about its own runtime. Omitted axes stay unobserved.
   observeCapabilities: () => ({ ok: true, observed: { fresh_session: true } }),
 });
 
@@ -176,18 +176,38 @@ adapter.observeExecution({ execution_handle: compiled.execution_handle });
 const verified = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
 ```
 
+**Observing a runtime is not owning it.** A callback you construct and a callback the installed
+runtime integration constructs have the same shape, so the contract distinguishes the POSITIONS
+instead of the callbacks:
+
+| position | who holds it | what its observations become |
+| --- | --- | --- |
+| ordinary package caller | anyone with `createAdapterIntegration` | candidates: unattested capability evidence, an availability claim instead of a model inventory, and `NON_CONFORMANT` + `UNTRUSTED_EXECUTION_EVIDENCE` instead of issued execution evidence |
+| host-authorized adapter context | the runtime integration the package itself wires (the Pi bridge, the installed Pi extension) | trusted evidence: attested capability over the observed axes, attested model availability, issued execution evidence |
+
+The host position is a runtime CAPABILITY minted in-process, recognised by identity, and deliberately
+absent from the package surface (`createHostAuthorizedAdapterIntegration`, `HOST_ADAPTER_AUTHORITY`, and
+`isHostAdapterAuthority` are not exported from `pi-charter`). A record, a string, a copy, a clone, and
+a `JSON` roundtrip of it are refused at construction. No name authorizes anything: `pi-charter`,
+`pi-subagents`, `parent`, and a file called `pi-charter.ts` are all just strings. Deep-importing an
+internal module to mint authority is reaching inside the package, not through its surface.
+
 Rules the contract enforces:
 
 - There is no parameter for capability booleans, model inventories, trust boundaries, or compiler
-  identity; supplying them is refused by name.
-- Capability observations are facts, not trust flags: `true` means observed, `false` means observed
-  absent, an omitted axis means nothing was observed, and `attested: true` is refused. Core owns the
-  promotion, so only an observed axis can become trusted evidence.
-- A dimension the adapter cannot observe is never attested, and nothing is inferred from a target or
-  adapter name. An axis no observer reported is recorded as an explicit unattested claim, so a hard
-  requirement refuses instead of passing on silence.
-- An unusable or partial observation fails closed; the adapter's returned facts are the only trusted
-  facts, and they are promoted by core.
+  identity; supplying them is refused by name. Trust flags (`attested`, `trusted`, `verified`) are
+  refused both as integration options and as capability axes.
+- Capability observations are facts, not trust flags, and they keep THREE states: `true` means the axis
+  was observed present, `false` means it was observed absent, and an omitted axis means it was not
+  observed at all. Omission is never rewritten as an observed `false`, so `{ fresh_session: false }`
+  and `{}` carry different evidence identities.
+- Only `trusted observed capability = true` plus an applicable canonical policy can reach `ENFORCED`.
+  Observed `false` and omission both fail closed and neither is promoted; omission reads as the weaker
+  truth for the dimension (`INSTRUCTED` with a policy, `UNSUPPORTED` for `model_selection`).
+- Nothing is inferred from a target or adapter name. An axis nobody observed attests nothing, so a
+  hard requirement refuses instead of passing on silence.
+- An unusable or malformed observation fails closed: the adapter's returned facts are the only facts
+  considered, and on the ordinary path they are recorded as the candidates they are.
 
 ## Low-level API — advanced and internal use only
 
@@ -213,8 +233,9 @@ Low-level cautions:
 - `createResolutionReceipt` re-runs the pipeline from the same environment inputs and refuses a
   claimed binding that does not equal what those inputs produce. Pass the exact artifacts you got.
 - Neither `createAttestationVerifier` nor `createExecutionAttestationIssuer` is on the package
-  surface. An ordinary consumer cannot mint trust at all; use `createAdapterIntegration` for a
-  substrate integration, and never deep-import internal modules.
+  surface. An ordinary consumer cannot mint trust at all, and neither can an ordinary consumer obtain
+  the host adapter authority: use `createAdapterIntegration` for a substrate integration (its
+  observations are candidates), and never deep-import internal modules.
 
 ## Optional advanced surfaces
 

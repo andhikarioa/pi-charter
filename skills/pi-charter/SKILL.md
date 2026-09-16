@@ -53,7 +53,10 @@ Low-level functions (`resolveExecutionContract`, `bindExecutionTarget`,
 `compileBoundRoleEnvelope`, …) remain public for advanced and internal use. Do **not** compose them
 by hand when the facade covers the need, and never feed a target handoff into envelope compilation.
 Adapters integrating their own runtime use the supported `createAdapterIntegration` contract; they
-supply observations and core promotes them into trusted evidence.
+supply observations, and those observations are CANDIDATES from the ordinary package position — no
+attested capability, no attested model, no issued execution evidence. Only the host-authorized
+adapter context (the Pi bridge and the installed extension, which hold an in-process capability that
+is not on the package surface) has observations promoted into trusted evidence.
 
 ## When to use Charter
 

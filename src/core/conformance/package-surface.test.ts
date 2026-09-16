@@ -2,10 +2,11 @@
  * U2 — the package export boundary (v0.1.1 Wave 2 — PKG1, PKG2).
  *
  * The package ships one entry point. Internal trust machinery — the attestation verifier factory, the
- * execution-evidence issuance factory, both process-local boundary stores, and the internal binding
- * provenance store — is deliberately absent from it, so an ordinary consumer cannot occupy a trust
- * position through the package at all. Deep filesystem imports from a source checkout are outside the
- * blessed contract; this probe is about the contract that IS blessed.
+ * execution-evidence issuance factory, both process-local boundary stores, the host adapter-authority
+ * capability and its authorized integration factory, and the internal binding provenance store — is
+ * deliberately absent from it, so an ordinary consumer cannot occupy a trust position through the
+ * package at all. Deep filesystem imports from a source checkout are outside the blessed contract;
+ * this probe is about the contract that IS blessed.
  */
 
 import assert from 'node:assert/strict';
@@ -27,6 +28,9 @@ test('PKG2 — internal trust minters are not on the package surface', () => {
     'markIssuedExecutionAttestation',
     'isIssuedExecutionAttestation',
     'markCanonicalTargetBinding',
+    'createHostAuthorizedAdapterIntegration',
+    'isHostAdapterAuthority',
+    'HOST_ADAPTER_AUTHORITY',
     'readCompilerIdentity',
     'writeCompilerIdentity',
     'computeCompilerIdentity',
