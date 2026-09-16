@@ -32,7 +32,8 @@ extension registers — nothing handwritten, nothing temporary:
 ```text
 charter_compile           compile bounded governance for the active session and admit the exact
                           artifact set for execution; returns an execution handle
-charter_verify_execution  verify what this session ran against that admission, using that handle
+charter_verify_execution  verify an OBSERVED run of this session against that admission, using that
+                          handle; Pi's tool-execution event is the execution observation
 ```
 
 Neither tool accepts capability booleans, a model inventory, a trust boundary, or a caller-chosen
@@ -43,7 +44,7 @@ Two supported library ways to invoke core:
 
 ```text
 compileForTarget          the one blessed facade — use it from a host integration
-compileViaPi / verifyExecutionViaPi
+compileViaPi / observeExecutionViaPi / verifyExecutionViaPi
                           the library bridge — use it from TypeScript inside Pi; it derives the
                           environment evidence itself and mediates the active parent session only
 ```

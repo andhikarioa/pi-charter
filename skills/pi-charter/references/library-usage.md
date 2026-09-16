@@ -56,13 +56,13 @@ script, no environment strings, no trust handed to the caller.
 ```text
 charter_compile           compile a bounded contract for the active session; returns the execution
                           handle for the exact artifact set it admitted
-charter_verify_execution  verify what this session ran, using that handle
+charter_verify_execution  verify an observed run of this session, using that handle
 ```
 
 If you are writing TypeScript inside the Pi process, the library bridge is the same integration:
 
 ```ts
-import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
+import { compileViaPi, observeExecutionViaPi, verifyExecutionViaPi } from 'pi-charter';
 
 const compiled = compileViaPi({
   task_contract: taskContract,
@@ -71,7 +71,10 @@ const compiled = compileViaPi({
 });
 if (!compiled.ok) throw new Error(JSON.stringify(compiled.errors));
 
-// later: what did this session actually run? The handle proves which artifact set it was admitted for.
+// later, once this session actually ran the work: report that execution observation, then verify.
+// The handle proves which artifact set was admitted; the observation proves it ran, and in which
+// session. Admission alone is not execution and does not verify.
+observeExecutionViaPi({ execution_handle: compiled.execution_handle });
 const verified = verifyExecutionViaPi({
   execution_handle: compiled.execution_handle,   // required — artifacts alone are not execution evidence
   resolution_receipt: compiled.compiled.resolution_receipt,
@@ -84,6 +87,8 @@ Bridge facts to rely on:
 
 - It mediates the **active `parent` session only**. A `subagents` contract is refused, not answered
   with evidence about a runtime the bridge cannot see.
+- An admitted artifact set nothing reported executing is **refused**, and a run observed in one
+  session does not verify as a run of another: execution evidence binds the observed session.
 - Capability booleans and model lists are **not accepted** from the caller; supplying them is an
   error, not an override.
 - It claims no capability it cannot observe, so nothing reaches `ENFORCED` on the bridge path, and a
@@ -160,10 +165,14 @@ const adapter = createAdapterIntegration({
       runtime: process.version,
     },
   }),
+  // Report ONLY what this adapter observed about its own runtime. Omitted axes stay unattested.
+  observeCapabilities: () => ({ ok: true, observed: { fresh_session: true } }),
 });
 
 const compiled = adapter.compile({ task_contract, authority_binder, model_profile });
 // … the substrate runs the admitted artifact set …
+// The runtime owner reports the execution it observed: admission alone is not execution.
+adapter.observeExecution({ execution_handle: compiled.execution_handle });
 const verified = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
 ```
 
@@ -171,8 +180,12 @@ Rules the contract enforces:
 
 - There is no parameter for capability booleans, model inventories, trust boundaries, or compiler
   identity; supplying them is refused by name.
-- A dimension the adapter cannot observe is never attested. The contract issues an explicit
-  unattested capability claim, so a hard requirement refuses instead of passing on silence.
+- Capability observations are facts, not trust flags: `true` means observed, `false` means observed
+  absent, an omitted axis means nothing was observed, and `attested: true` is refused. Core owns the
+  promotion, so only an observed axis can become trusted evidence.
+- A dimension the adapter cannot observe is never attested, and nothing is inferred from a target or
+  adapter name. An axis no observer reported is recorded as an explicit unattested claim, so a hard
+  requirement refuses instead of passing on silence.
 - An unusable or partial observation fails closed; the adapter's returned facts are the only trusted
   facts, and they are promoted by core.
 

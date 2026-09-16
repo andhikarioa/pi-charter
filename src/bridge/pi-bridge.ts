@@ -7,30 +7,37 @@
  * supported adapter contract (`createAdapterIntegration`) — the same contract a legitimate external
  * substrate adapter integrates through:
  *
- *   compileViaPi          compile governance for the ACTIVE Pi session
- *   verifyExecutionViaPi  verify what this session actually ran against that compiled governance
+ *   compileViaPi                  compile governance for the ACTIVE Pi session
+ *   observeExecutionViaPi         report that this session ACTUALLY executed an admitted artifact set
+ *   verifyExecutionViaPi          verify that observed run against that compiled governance
  *
  * What makes it a bridge rather than a convenience wrapper is where its evidence comes from. The
  * capability axes and the model inventory are NOT accepted from the caller: they are derived from the
  * actual Pi environment this process is running in (`PI_PROVIDER`, `PI_MODEL`, `PI_SESSION_ID`) and
- * from this adapter's own package metadata. A caller cannot pass booleans, a model list, or a source
- * name into it, so nothing a caller can supply becomes attested environment truth (H2, T2).
+ * from this adapter's own package metadata, and the capability axes come from this bridge's own
+ * capability observation (none, for the bridge: it does not own execution). A caller cannot pass
+ * booleans, a model list, or a source name into it, so nothing a caller can supply becomes attested
+ * environment truth (H2, T2).
  *
- * The execution artifact link (F1) is carried by the compile-time admission handle: `compileViaPi`
- * returns one, and `verifyExecutionViaPi` refuses to issue execution evidence without it. A receipt,
- * envelope, and contract supplied at verification time are checked AGAINST the admitted artifact set,
- * never copied into trusted evidence, so "compile B, run nothing, then verify B" is no longer
- * EXECUTION_CONFORMANT — it is a mismatch against the admission, or a refusal when nothing was
- * admitted at all.
+ * The execution artifact link (F1) is carried by the compile-time admission handle plus the observed
+ * execution event. `compileViaPi` returns the handle; `observeExecutionViaPi` is where the runtime
+ * owner reports that the admitted artifact set actually ran, and `verifyExecutionViaPi` refuses to
+ * issue execution evidence without it — an admitted artifact set nothing ever reported executing has
+ * admission evidence and no execution evidence. A receipt, envelope, and contract supplied at
+ * verification time are checked AGAINST the admitted artifact set, never copied into trusted
+ * evidence, so "compile B, run nothing, then verify B" is not EXECUTION_CONFORMANT: it is a mismatch
+ * against the admission, a refusal when nothing was admitted, or a refusal when nothing was observed
+ * executing. The evidence names the session the run was OBSERVED in, so a run observed in one session
+ * never verifies as a run of another.
  *
  * What the bridge truthfully does NOT attest, and says so by omission:
  *
  *   capability enforcement   the bridge does not own execution, so it cannot observe whether the
  *                            substrate hard-enforces a tool ceiling, a file scope, a model, a fresh
- *                            session, or independent review. It therefore issues an explicit
- *                            UNATTESTED capability claim with no axis claimed true. A dimension a
- *                            real substrate does enforce must be attested by that substrate's own
- *                            adapter, which owns the observation boundary to issue it.
+ *                            session, or independent review. It therefore observes no capability axis,
+ *                            which core records as an explicit UNATTESTED claim with no axis true. A
+ *                            dimension a real substrate does enforce must be observed by that
+ *                            substrate's own adapter, which owns the observation boundary to report it.
  *   fresh-session state      the active session's topology is not independent-review evidence, so no
  *                            freshness observation is recorded; a contract requiring it fails closed.
  *   tool/enforcement outcome what was in effect during a run is not observable from here.
@@ -51,6 +58,8 @@ import {
   type AdapterCompileInput,
   type AdapterCompileResult,
   type AdapterEnvironmentObservation,
+  type AdapterExecutionObservationInput,
+  type AdapterExecutionObservationResult,
   type AdapterExecutionVerificationInput,
   type AdapterExecutionVerificationResult,
   type AdapterIntegration,
@@ -164,8 +173,8 @@ export type PiCompileResult = AdapterCompileResult;
  *
  * The environment evidence is issued by the adapter contract from the actual observation: the model
  * inventory is an attested `model_registry` payload carrying the provider/model this session actually
- * reports, and the capability axes are an explicit UNATTESTED claim with no axis true, because the
- * bridge cannot observe substrate enforcement. Neither is caller-supplied, and neither is inferred
+ * reports, and no capability axis is attested because the bridge observes none — core records that as
+ * an explicit UNATTESTED claim with no axis true. Neither is caller-supplied, and neither is inferred
  * from a target name. The returned `execution_handle` is this process's admission of exactly this
  * artifact set for execution.
  */
@@ -177,29 +186,55 @@ export function compileViaPi(input: unknown): PiCompileResult {
   return integration.compile(input);
 }
 
+// ── observe_execution ───────────────────────────────────────────────────────
+
+/**
+ * The one admitted input of an execution observation: the handle of the artifact set that ran.
+ */
+export type PiExecutionObservationInput = AdapterExecutionObservationInput;
+
+export type PiExecutionObservationResult = AdapterExecutionObservationResult;
+
+/**
+ * Report that the active Pi session actually executed the artifact set a handle admitted.
+ *
+ * This is the runtime owner's observation, and it is the only thing that makes an admitted artifact
+ * set eligible for execution evidence: the runtime reports that it ran, and the session identity it
+ * reports at that moment is bound into the evidence. Admission alone (compile, then verify) is not
+ * execution, and `verifyExecutionViaPi` refuses without this step rather than reading execution out
+ * of the artifacts, the model, or the session metadata.
+ */
+export function observeExecutionViaPi(input: PiExecutionObservationInput): PiExecutionObservationResult {
+  const integration = piIntegration();
+  if ('reason' in integration) return { ok: false, reason: integration.reason };
+  return integration.observeExecution(input);
+}
+
 // ── verify_execution ────────────────────────────────────────────────────────
 
 /**
- * The artifacts a run is checked against, plus the execution handle that admitted them. The hand is
+ * The artifacts a run is checked against, plus the execution handle that admitted them. The handle is
  * required: without it, the artifacts are a claim about a run, not proof this process admitted them.
+ * The handle is also not sufficient on its own: the run must have been observed executing.
  */
 export type PiExecutionVerificationInput = AdapterExecutionVerificationInput;
 
 export type PiExecutionVerificationResult = AdapterExecutionVerificationResult;
 
 /**
- * Verify what this session actually ran against the governance compiled for it.
+ * Verify a run of this session against the governance compiled for it.
  *
- * The evidence is issued by the adapter contract from the admission the handle names and the same
- * observation: the model and session this process actually reports, and the target it actually is.
- * Everything the bridge cannot observe is omitted, so a contract that requires a tool ceiling, a
- * fresh session, or a verifier outcome gets a truthful deviation or `ACCEPTANCE_NOT_VERIFIED` rather
- * than a green result built on silence.
+ * Two things are required, and neither substitutes for the other: the admission handle the compile
+ * minted for exactly these artifacts, and a recorded observation that the runtime actually executed
+ * them (`observeExecutionViaPi`). The bridge withholds execution evidence when either is missing,
+ * and it refuses when the observed session is not the session currently being verified — a run
+ * observed in one session is not a run of another, however well the target and model agree.
  *
- * Which artifact was compiled is read from the admission — never transcribed from whatever artifacts
- * are presented here. Artifacts supplied with this call are checked against the admitted ones by the
- * verifier, so a receipt, contract, or envelope that the handle did not admit is a deviation, and a
- * handle this process never minted is refused outright.
+ * The evidence is issued from the admission and the observed run; everything the bridge cannot
+ * observe is omitted, so a contract that requires a tool ceiling, a fresh session, or a verifier
+ * outcome gets a truthful deviation or `ACCEPTANCE_NOT_VERIFIED` rather than a green result built on
+ * silence. Which artifact was compiled is read from the admission — never transcribed from whatever
+ * artifacts are presented here.
  */
 export function verifyExecutionViaPi(input: PiExecutionVerificationInput): PiExecutionVerificationResult {
   const integration = piIntegration();

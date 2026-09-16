@@ -1,5 +1,5 @@
 /**
- * F3 Pi integration smoke — the extension is discovered by Pi itself, and its tools work.
+ * F3/F1 Pi integration smoke — the extension is discovered by Pi itself, and its tools work.
  *
  * This is not a handwritten temporary script composing Charter by hand. It loads
  * `extensions/pi-charter.ts` through Pi's OWN resource loader (`DefaultResourceLoader`, the same
@@ -9,7 +9,9 @@
  *
  *   P1  Pi discovers the extension and registers both operations
  *   P2  charter_compile compiles a tiny parent contract through the real context observation
- *   P3/P4  the exact admitted artifact set verifies (handle-only, as the LLM would call it)
+ *   P3a verifying an admitted artifact set that never executed is REFUSED (F1)
+ *   P3b Pi's own tool-execution event is the execution observation, and then it verifies
+ *   P3c a run observed in one session does not verify as a run of another session
  *   P5  a handle this process never minted is refused
  *   P6  the trusted model evidence is the provider/model the context actually reported
  *   P7  no capability the extension cannot observe is attested
@@ -121,7 +123,8 @@ const taskContract = {
   verification: { level: 'V1' },
 };
 
-const execute = (name, params) => tools.get(name).definition.execute(`smoke-${name}`, params, undefined, undefined, context);
+const executeIn = (name, params, ctx) => tools.get(name).definition.execute(`smoke-${name}`, params, undefined, undefined, ctx);
+const execute = (name, params) => executeIn(name, params, context);
 
 // ── P2/P3/P6/P7 — compile through the Pi-registered tool ───────────────────
 
@@ -140,12 +143,34 @@ assert(
 );
 console.log(`pi integration smoke: compiled via Pi tool; model evidence = ${compiled.details.resolved_model}`);
 
-// ── P4 — verify the exact admitted artifact set, handle-only ───────────────
+// ── P3a — admission is not execution (F1) ──────────────────────────────────
+
+const premature = await execute('charter_verify_execution', { execution_handle: compiled.details.execution_handle });
+assert(premature.details.ok !== true, 'verifying an admitted artifact set nothing reported executing must be refused');
+assert(premature.content[0].text.includes('observed no execution'), `the refusal must name the missing execution observation, got: ${premature.content[0].text}`);
+console.log('pi integration smoke: verification before any observed execution refused');
+
+// ── P3b — Pi's tool-execution event is the substrate observation (F1) ──────
+
+const startHandlers = extension.handlers.get('tool_execution_start') ?? [];
+assert(startHandlers.length === 1, 'the extension must observe tool execution in the session');
+await startHandlers[0]({ type: 'tool_execution_start', toolCallId: 'smoke-work-1', toolName: 'bash', args: { command: 'npm test' } }, context);
 
 const verified = await execute('charter_verify_execution', { execution_handle: compiled.details.execution_handle });
 assert(verified.details.ok === true, `charter_verify_execution refused: ${verified.content[0].text}`);
 assert(verified.details.verdict === 'EXECUTION_CONFORMANT', `expected EXECUTION_CONFORMANT, got ${verified.details.verdict}`);
-console.log('pi integration smoke: admitted artifact set verified EXECUTION_CONFORMANT');
+console.log('pi integration smoke: observed execution verified EXECUTION_CONFORMANT');
+
+// ── P3c — a run observed in one session is not a run of another ───────────
+
+const otherSession = {
+  model: { provider: OBSERVED.provider, id: OBSERVED.model },
+  sessionManager: { getSessionId: () => 'smoke-session-2' },
+};
+const mismatched = await executeIn('charter_verify_execution', { execution_handle: compiled.details.execution_handle }, otherSession);
+assert(mismatched.details.ok !== true, 'execution evidence binds the session the run was observed in');
+assert(mismatched.content[0].text.includes(OBSERVED.session), `the refusal must name the observed session, got: ${mismatched.content[0].text}`);
+console.log('pi integration smoke: session-bound execution evidence refused under another session');
 
 // ── P5 — an unbound artifact / foreign handle is refused ───────────────────
 
@@ -165,4 +190,4 @@ for (const forbidden of ['child_process', 'spawn(', 'spawnSync', 'setTimeout', '
 }
 
 rmSync(agentDir, { recursive: true, force: true });
-console.log('F3 Pi integration smoke: PASS');
+console.log('F3/F1 Pi integration smoke: PASS');

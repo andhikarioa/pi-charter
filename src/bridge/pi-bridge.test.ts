@@ -1,16 +1,15 @@
 /**
- * U2 — the Pi bridge (v0.1.1 Wave 2 — bridge truth, ENV1, ENV2; final correction — F1 E1–E8).
+ * U2 — the Pi bridge (v0.1.1 Wave 2 — bridge truth, ENV1, ENV2; final correction — F1 E1–E10).
  *
  * The bridge is the production issuance boundary, so these probes are about what it refuses as much
  * as what it emits: capability booleans and model lists supplied by a caller are not admitted at all,
  * a runtime it cannot see is not answered, and everything it cannot observe stays omitted rather than
  * filled in with a convenient default.
  *
- * The final correction adds the exact execution artifact link. The defect it closes: compiling A and
- * B, executing nothing for B, and then verifying B with artifacts supplied at verification time used
- * to return EXECUTION_CONFORMANT, because the bridge copied the submitted artifact identities into
- * trusted evidence. E1–E8 prove that supplying an artifact is no longer proof that this process
- * admitted it for execution.
+ * The final correction has two links, and E1–E10 prove both are required. Supplying an artifact is not
+ * proof that this process admitted it for execution (the admission handle), and an admission is not
+ * proof that the artifact ran (the observed execution event). Neither one alone moves an artifact set
+ * to EXECUTION_CONFORMANT, and a run observed in one session never verifies as a run of another.
  */
 
 import assert from 'node:assert/strict';
@@ -24,7 +23,7 @@ import { compileForTarget } from '../core/compile/compile-for-target.ts';
 import type { ModelProfile } from '../core/routing/model-routing.ts';
 import type { TaskContract } from '../core/contracts/task-contract.ts';
 import { createAttestationVerifier } from '../core/attestation/attestation.ts';
-import { compileViaPi, observePiEnvironment, verifyExecutionViaPi } from './pi-bridge.ts';
+import { compileViaPi, observeExecutionViaPi, observePiEnvironment, verifyExecutionViaPi } from './pi-bridge.ts';
 
 const BRIDGE_DIR = dirname(fileURLToPath(import.meta.url));
 const INTEGRATION_DIR = resolve(BRIDGE_DIR, '..', 'integration');
@@ -94,11 +93,17 @@ function compileVia(contract: TaskContract, vars: Record<string, string | undefi
   );
 }
 
-/** Compile a contract and return the artifacts plus the admission handle that was minted for them. */
+/**
+ * Compile a contract, record the runtime's execution observation, and return the artifacts plus the
+ * admission handle they were admitted under. Admission alone is never execution: the observation is
+ * what makes the admitted set eligible for execution evidence at all.
+ */
 function admitted(contract: TaskContract, vars: Record<string, string | undefined> = LIVE_PI) {
   const compiled = compileVia(contract, vars);
   assert.equal(compiled.ok, true, 'the fixture contract must compile before it can be verified');
   if (!compiled.ok) throw new Error('unreachable');
+  const observed = withPiEnvironment(vars, () => observeExecutionViaPi({ execution_handle: compiled.execution_handle }));
+  assert.equal(observed.ok, true, 'the fixture runtime must be able to report that it executed the admitted artifact set');
   return { ...compiled.compiled, execution_handle: compiled.execution_handle };
 }
 
@@ -215,7 +220,28 @@ test('bridge — no Pi environment means no evidence, and a clear refusal', () =
   assert.equal(compiled.errors[0]?.path, 'environment');
 });
 
-// ── F1 E1–E8 — the exact execution artifact link ───────────────────────────
+// ── F1 E1–E10 — the exact execution artifact link ──────────────────────────
+
+test('E9 — compile then verify, with no observed execution: REFUSED', () => {
+  const compiled = compileVia(implementContract());
+  assert.equal(compiled.ok, true);
+  if (!compiled.ok) return;
+  // The handle is real and the artifacts are in hand, but nothing ever reported executing them.
+  const verified = withPiEnvironment(LIVE_PI, () => verifyExecutionViaPi({ execution_handle: compiled.execution_handle }));
+  assert.equal(verified.ok, false, 'an admitted artifact set nothing reported executing must not verify');
+  if (verified.ok) return;
+  assert.equal(verified.reason.includes('observed no execution'), true);
+});
+
+test('E10 — a run observed in one session does not verify as a run of another', () => {
+  const a = admitted(implementContract());
+  const verified = withPiEnvironment({ ...LIVE_PI, PI_SESSION_ID: 'a-different-session' }, () =>
+    verifyExecutionViaPi({ execution_handle: a.execution_handle }),
+  );
+  assert.equal(verified.ok, false, 'execution evidence binds the session the run was observed in');
+  if (verified.ok) return;
+  assert.equal(verified.reason.includes('fixture-session'), true);
+});
 
 test('E1 — compile A and B, admit only A, verify B: NON_CONFORMANT, never a pass', () => {
   const a = admitted(implementContract());

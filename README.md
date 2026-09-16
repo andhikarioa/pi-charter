@@ -147,14 +147,18 @@ out no trust to the caller. The library bridge below does the same thing when yo
 TypeScript inside the Pi process:
 
 ```ts
-import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
+import { compileViaPi, observeExecutionViaPi, verifyExecutionViaPi } from 'pi-charter';
 
 const compiled = compileViaPi({ task_contract: contract, authority_binder, model_profile });
 if (!compiled.ok) throw new Error('Compilation refused');
 
-// The compile ADMITS exactly this artifact set for execution and returns the handle that proves it.
-// After the work ran, verify against that admission. Artifacts supplied at verification time are
+// … the session runs the work …
+
+// The compile ADMITS exactly this artifact set for execution and returns the handle that proves it,
+// and the runtime reports the execution it actually observed. Admission alone is not execution: a
+// handle with no observed execution does not verify. Artifacts supplied at verification time are
 // checked against the admission, never promoted into execution evidence.
+observeExecutionViaPi({ execution_handle: compiled.execution_handle });
 const verified = verifyExecutionViaPi({
   execution_handle: compiled.execution_handle,
   resolution_receipt: compiled.compiled.resolution_receipt,
@@ -334,8 +338,10 @@ Review independence is bounded by target capability truth:
 The bundled extension is the Pi-native surface: Pi loads it, and it registers `charter_compile` and
 `charter_verify_execution`. `charter_compile` compiles a bounded contract for the active session and
 returns the execution handle for the exact artifact set it admitted; `charter_verify_execution`
-verifies against that admission only. Neither tool accepts capability booleans, a model inventory, a
-trust boundary, or a caller-chosen compiler identity, and neither can mint trust.
+verifies an OBSERVED run against that admission only — Pi reports every tool execution in the
+session, and that observation is what makes the admitted artifact set a run. Neither tool accepts
+capability booleans, a model inventory, a trust boundary, or a caller-chosen compiler identity, and
+neither can mint trust.
 
 The companion skill provides operator and agent adoption guidance:
 - When to apply Charter governance to non-trivial tasks.
@@ -458,13 +464,17 @@ JSON roundtrip — is refused as `UNTRUSTED_EXECUTION_EVIDENCE`. The Pi bridge i
 the session it runs in; an integration that owns a subagents runtime issues it through its own
 adapter. Charter stores no session, run, or workflow state to remember it.
 
-**Execution conformance requires the exact artifact link.** Issuing evidence about a run is not the
-same as proving which governance artifact that run was admitted for. `compileViaPi` (and every
-adapter integration) admits the compiled artifact set and returns an opaque, process-local execution
-handle; verification issues evidence from that admission and checks any supplied artifacts against
-it. Supplying a receipt, an envelope, and a contract at verification time is therefore a claim about a
-run, not evidence that this process admitted them: an unbound artifact is refused, and an artifact
-that was not the admitted one is `NON_CONFORMANT` — no matter that the session and model match.
+**Execution conformance requires the exact artifact link and an observed execution.** Issuing evidence
+about a run is not the same as proving which governance artifact that run was admitted for, and an
+admission is not the same as a run. `compileViaPi` (and every adapter integration) admits the compiled
+artifact set and returns an opaque, process-local execution handle; the runtime that owns execution
+reports that it actually executed that set (`observeExecutionViaPi`, or the adapter contract's
+`observeExecution`), and verification issues evidence from the admission AND that observation, bound
+to the session the run was observed in. A receipt, envelope, and contract supplied at verification
+time are therefore a claim about a run, not evidence that this process admitted them, and neither is a
+handle nothing ever executed: an unbound artifact is refused, an unobserved admission is refused, a
+run observed in another session is refused, and an artifact that was not the admitted one is
+`NON_CONFORMANT` — no matter that the session and model match.
 
 ---
 

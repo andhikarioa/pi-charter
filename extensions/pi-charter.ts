@@ -17,7 +17,15 @@
  *   It hands out no trust. The tool calls the supported adapter contract, which promotes the observed
  *   facts into trusted evidence; the LLM-facing arguments have no capability booleans, no model
  *   inventory, no trust boundary, and no way to mint attestations. Execution verification requires the
- *   opaque handle the compile admitted: passing artifacts at verification time cannot substitute.
+ *   opaque handle the compile admitted AND an observed execution of it: passing artifacts at
+ *   verification time cannot substitute, and neither can calling verify immediately after compile.
+ *
+ *   It observes the execution event itself. Pi reports every tool execution in the session, so a tool
+ *   that is not one of this extension's own two operations is work running under the governance this
+ *   session admitted — that is the substrate's observation, and it is recorded against the pending
+ *   handle before verification. An admitted artifact set nothing ever reported executing has admission
+ *   evidence and no execution evidence, and verification refuses rather than reading execution out of
+ *   the artifacts, the model, or the session metadata.
  *
  * The extension owns no scheduling, no session lifecycle, no persistence, and no execution. It maps
  * tool arguments, calls the compiled package, and returns values.
@@ -48,6 +56,16 @@ interface PiExtensionApi {
       ctx: PiExtensionContext,
     ): Promise<{ content: { type: 'text'; text: string }[]; details: Record<string, unknown> }>;
   }): void;
+  /**
+   * Pi's event subscription. This extension uses exactly one event: the moment a tool actually
+   * executes in the session, which is the substrate's own observation that work ran.
+   */
+  on?(event: 'tool_execution_start', handler: (event: ToolExecutionStartEvent, ctx: PiExtensionContext) => void): void;
+}
+
+/** The only part of a Pi tool-execution event this extension reads. */
+interface ToolExecutionStartEvent {
+  toolName?: unknown;
 }
 
 /** The live facts this extension can observe about the session it runs in. */
@@ -73,6 +91,43 @@ interface ObservationRefusal {
 }
 
 const TOOL_NAMES = ['charter_compile', 'charter_verify_execution'] as const;
+
+/**
+ * Handles this extension admitted, by the session that admitted them, so a tool executing in that
+ * session can be reported as the substrate's execution observation. Bounded FIFO, process-local: this
+ * is an observation window, not a run history, and it holds no artifacts.
+ */
+const PENDING_EXECUTION = new Map<string, string>();
+const MAX_PENDING_EXECUTION = 16;
+
+function rememberPendingExecution(sessionIdentity: string, handle: string): void {
+  PENDING_EXECUTION.delete(sessionIdentity);
+  PENDING_EXECUTION.set(sessionIdentity, handle);
+  while (PENDING_EXECUTION.size > MAX_PENDING_EXECUTION) {
+    const oldest = PENDING_EXECUTION.keys().next().value;
+    if (oldest === undefined) break;
+    PENDING_EXECUTION.delete(oldest);
+  }
+}
+
+/**
+ * The substrate's execution observation (F1). Pi reports that a tool is executing in this session;
+ * a tool that is not one of this extension's own operations is work running, and that is reported
+ * against the handle admitted for this session. Compiling admits an artifact set and verifying
+ * inspects one, so neither is execution: without this observation, verification refuses.
+ */
+function observeToolExecution(event: ToolExecutionStartEvent, ctx: PiExtensionContext | undefined): void {
+  const toolName = typeof event?.toolName === 'string' ? event.toolName : undefined;
+  if (toolName === undefined || (TOOL_NAMES as readonly string[]).includes(toolName)) return;
+  const observed = observeSession(ctx);
+  if (!observed.ok) return;
+  const session = observed.observation.session_identity;
+  const handle = PENDING_EXECUTION.get(session);
+  if (handle === undefined) return;
+  const integration = integrationFor(observed);
+  if (integration === undefined) return;
+  if (integration.observeExecution({ execution_handle: handle }).ok) PENDING_EXECUTION.delete(session);
+}
 
 /** The adapter identity every attestation this integration causes will carry. */
 const ADAPTER_NAME = 'pi-charter';
@@ -207,6 +262,7 @@ const compileTool: Parameters<PiExtensionApi['registerTool']>[0] = {
     }
 
     const receipt = compiled.compiled.resolution_receipt;
+    rememberPendingExecution(observed.observation.session_identity, compiled.execution_handle);
     return {
       content: [
         {
@@ -215,7 +271,7 @@ const compileTool: Parameters<PiExtensionApi['registerTool']>[0] = {
             `Charter compiled ${receipt.task_contract_identity} for the active parent session as ${receipt.resolved_role}.\n` +
             `receipt_identity: ${receipt.receipt_identity}\n` +
             `execution_handle: ${compiled.execution_handle}\n` +
-            'Pass execution_handle to charter_verify_execution after the work ran.',
+            'Pass execution_handle to charter_verify_execution once this session has actually run the work; verifying before any tool has executed is refused.',
         },
       ],
       details: {
@@ -238,10 +294,11 @@ const verifyTool: Parameters<PiExtensionApi['registerTool']>[0] = {
   name: TOOL_NAMES[1],
   label: 'Charter Verify Execution',
   description:
-    'Verify what the active Pi session actually ran against the exact governance artifact set that charter_compile admitted, using the execution handle it returned.',
+    'Verify a run of the active Pi session against the exact governance artifact set that charter_compile admitted, using the execution handle it returned. Refused when the session never executed work under that admission.',
   promptSnippet: 'Verify this session actually ran the admitted Charter governance',
   promptGuidelines: [
     'Use charter_verify_execution only with an execution_handle returned by charter_compile in this session; artifacts alone are not execution evidence and are refused.',
+    'Verification requires an observed execution: a tool call in this session after the admission. Verifying immediately after charter_compile is refused.',
   ],
   parameters: {
     type: 'object',
@@ -292,8 +349,11 @@ const verifyTool: Parameters<PiExtensionApi['registerTool']>[0] = {
   },
 };
 
-/** Register the two operations. Pi loads this default export as the extension factory. */
+/** Register the two operations, and Pi's execution event as the substrate observation (F1). */
 export default function piCharterIntegration(pi: PiExtensionApi): void {
   pi.registerTool(compileTool);
   pi.registerTool(verifyTool);
+  // Fail-closed if this Pi build cannot report tool execution: no observation is recorded, so
+  // verification refuses instead of inferring execution from something that was never observed.
+  if (typeof pi.on === 'function') pi.on('tool_execution_start', observeToolExecution);
 }

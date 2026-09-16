@@ -1,5 +1,5 @@
 /**
- * External package consumer smoke (U3 + F3) — consume the packed artifact from outside the repo.
+ * External package consumer smoke (U3 + F3 + F1) — consume the packed artifact from outside the repo.
  *
  * The package is packed, installed into a throwaway consumer project, and exercised through its one
  * supported entry point. Nothing here reads the source tree: the consumer sees exactly what npm
@@ -9,7 +9,10 @@
  *   - internal trust minters are unreachable from outside
  *   - the recorded compiler identity verifies against the SHIPPED (test-free) artifact set
  *   - the Pi extension manifest and file ship, so Pi can discover the integration
- *   - the supported adapter contract is usable by an external consumer
+ *   - SMOKE 1 (F1): admission is not execution — an observed execution is required, and the run is
+ *     bound to the session it was observed in
+ *   - SMOKE 2 (F3): an external adapter reports only the capability axes it observed; observed axes
+ *     become trusted evidence, omitted axes stay unattested, and required omitted axes still refuse
  *
  * Usage: node scripts/consumer-smoke.mjs
  */
@@ -106,6 +109,9 @@ assert.equal(compiled.ok, true, 'the shipped package must compile through the fa
 assert.match(compiled.compiled.resolution_receipt.compiler_identity, /^sha256:[0-9a-f]{64}$/);
 
 // The supported adapter contract is usable by an external consumer, and it mints no trust for them.
+//
+// SMOKE 1 — execution truth. Admission is not execution: the handle alone, the artifacts alone, and
+// matching model/target/session metadata are all claims about a run.
 const adapter = charter.createAdapterIntegration({
   name: 'consumer-adapter',
   version: '1.0.0',
@@ -117,12 +123,58 @@ const viaAdapter = adapter.compile({
   model_profile: { workhorse: { preferred: 'consumer-model', fallback: [] } },
 });
 assert.equal(viaAdapter.ok, true, 'the adapter contract must compile from outside: ' + JSON.stringify(viaAdapter.errors));
+
+const premature = adapter.verifyExecution({ execution_handle: viaAdapter.execution_handle });
+assert.equal(premature.ok, false, 'an admitted artifact set nothing reported executing must not verify');
+assert.match(String(premature.reason), /observed no execution/, 'the refusal must name the missing execution observation');
+
+// The runtime owner reports the execution it actually observed, and that binds the run to a session.
+const observedExecution = adapter.observeExecution({ execution_handle: viaAdapter.execution_handle });
+assert.equal(observedExecution.ok, true, 'the adapter must be able to report its own execution observation');
+assert.equal(observedExecution.observation.session_identity, 'consumer-session');
 const verified = adapter.verifyExecution({ execution_handle: viaAdapter.execution_handle });
 assert.equal(verified.ok, true);
 assert.equal(verified.verification.verdict, 'EXECUTION_CONFORMANT');
 const unbound = adapter.verifyExecution({ execution_handle: 'unbound-handle-value' });
 assert.equal(unbound.ok, false, 'an unbound handle must be refused for an external consumer too');
+for (const name of ['observeExecution', 'markExecutionObserved', 'markExecuted', 'createExecutionObservation']) {
+  assert.equal(name in charter, false, name + ' must not be reachable from the package entry point');
+}
+console.log('SMOKE 1 — execution truth: unobserved admission refused, observed execution verified');
 
-console.log('external consumer module: facade compile + adapter compile/verify PASS');
+// SMOKE 2 — adapter capability observation. The adapter reports only the axes it observed; core owns
+// the promotion, and an axis the adapter did not observe is never inherited.
+const observeContract = (taskContract) => ({
+  task_contract: taskContract,
+  authority_binder: charter.createAuthorityBinder({ 'consumer-spec': { doc: 'CONSUMER-SPEC.md', revision: '1' } }),
+  model_profile: { workhorse: { preferred: 'consumer-model', fallback: [] } },
+});
+const observing = charter.createAdapterIntegration({
+  name: 'consumer-capability-adapter',
+  version: '1.0.0',
+  observeEnvironment: () => ({ ok: true, observation: { target: 'parent', provider: 'consumer-provider', model: 'consumer-model', session_identity: 'consumer-session', runtime: process.version } }),
+  observeCapabilities: () => ({ ok: true, observed: { fresh_session: true, independent_review: true } }),
+});
+const reviewContract = {
+  ...contract,
+  acceptance: { commands: ['npm test'], review: { required: true, independence: 'independent', executor: 'fresh_session' } },
+};
+const reviewed = observing.compile(observeContract(reviewContract));
+assert.equal(reviewed.ok, true, 'observed fresh_session + independent_review must support the required review: ' + JSON.stringify(reviewed.errors));
+assert.equal(reviewed.compiled.target_binding.capability_evidence.class, 'attested');
+assert.equal(reviewed.compiled.target_binding.enforcement.model_selection, 'UNSUPPORTED', 'an axis the adapter never observed must not be attested');
+
+// tool_ceiling and file_scope_enforcement were omitted, so a contract that requires them refuses.
+const requiring = {
+  ...contract,
+  execution_policy: { allowed_tools: ['read'] },
+  requirements: { enforcement: { allowed_tools: 'required' } },
+};
+const refused = observing.compile(observeContract(requiring));
+assert.equal(refused.ok, false, 'an omitted capability axis must not be inherited from a neighbouring one');
+assert.equal(refused.errors[0].code, 'UNSUPPORTED_BY_EXECUTION_TARGET');
+console.log('SMOKE 2 — adapter capability observation: observed axes attested, omitted axis unattested');
+
+console.log('external consumer module: facade compile + adapter compile/observe/verify PASS');
 `;
 }
