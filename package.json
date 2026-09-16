@@ -1,6 +1,6 @@
 {
   "name": "pi-charter",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "Deterministic, fail-closed governance compiler for bounded Pi work: contracts, routing, execution-target truth, role envelopes, and bounded next actions.",
   "type": "module",

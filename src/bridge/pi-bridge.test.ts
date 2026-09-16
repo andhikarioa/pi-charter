@@ -294,7 +294,7 @@ test('E3 — the admitted artifact set verifies: PASS', () => {
   if (!verified.ok) return;
   assert.equal(verified.verification.verdict, 'EXECUTION_CONFORMANT');
   assert.deepEqual(verified.verification.deviations, []);
-  assert.deepEqual(verified.verification.substrate, { name: 'pi-charter', version: '0.1.0' });
+  assert.deepEqual(verified.verification.substrate, { name: 'pi-charter', version: '0.1.1' });
   // No assertions were declared, so acceptance is not declared either — that is not a PASS.
   assert.equal(verified.verification.acceptance.status, 'ACCEPTANCE_NOT_DECLARED');
 });
