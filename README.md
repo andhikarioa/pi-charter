@@ -4,7 +4,7 @@ A deterministic, fail-closed governance compiler for bounded Pi work. pi-charter
 
 > 🛡️ **Fail-Closed Governance:** *Charter decides, constrains, and compiles. The substrate executes.* An unstaffable model tier, unverifiable authority, or contradictory contract stops immediately.
 
-**Current release: v0.1.1** — sealed, locally packaged, and dogfood validated. **v0.1.2 release preparation is complete; v0.1.2 is not yet sealed or tagged.** Built for Pi operators and coding agent harnesses that need rigorous boundaries, honest target enforcement, and independent review verification.
+**Current release: v0.1.2** — sealed, locally packaged, and dogfood validated. Built for Pi operators and coding agent harnesses that need rigorous boundaries, honest target enforcement, and independent review verification.
 
 ```text
 validate contract → bind authority → resolve model/scope → bind target capability → compile role envelope → emit receipt
@@ -431,22 +431,15 @@ npm run smoke:consumer   # Packs tarball, installs in isolated consumer, verifie
 
 ## 📦 Release
 
-**Current Release: v0.1.1 (Sealed & Immutable)**
-
-- **Sealed commit:** `5c2ccd2149a1f7c08bafa8b71951f88a4e2d7769`
-- **Annotated tag:** `v0.1.1`
-- **Dogfood validation:** Real-world build validation against `tasklet` (local Go CLI with JSON persistence) covering parent implementation, delegated child work, independent review, owner adjudication, and bounded correction.
-- **Specification:** [`PI-CHARTER-v0.1-CANONICAL-MASTER-BUILD-SPEC.md`](./PI-CHARTER-v0.1-CANONICAL-MASTER-BUILD-SPEC.md)
-
-### Prepared Release: v0.1.2 (Prepared — Not Sealed)
-
-Release preparation for v0.1.2 is complete. v0.1.2 is **not** sealed, tagged, packaged as a
-release, or published; no annotated tag exists for it. This section records release-prep truth only.
+**Current Release: v0.1.2 (Sealed & Immutable)**
 
 - **Version:** `0.1.2`
-- **Previous release:** v0.1.1 — `5c2ccd2149a1f7c08bafa8b71951f88a4e2d7769`
+- **Annotated tag:** `v0.1.2` — the tag points at the seal commit (`git rev-list -n1 v0.1.2`)
+- **Release-prep baseline:** `44e5fb53be2ebbd98c87e8c7b43942de7b4f4612`
+- **Previous release:** v0.1.1 — `5c2ccd2149a1f7c08bafa8b71951f88a4e2d7769` (tag `v0.1.1`)
 - **Dogfood closeout:** `6bc1b8c099298d8ce13865e6b15654cedfd8177c` — [`PI-CHARTER-V0.1.2-TASKLET-DOGFOOD-CLOSEOUT.md`](./PI-CHARTER-V0.1.2-TASKLET-DOGFOOD-CLOSEOUT.md)
 - **Tasklet dogfood final HEAD:** `1651ca68d35c9382095ed74ecf07907d21096c0c`
+- **Specification:** [`PI-CHARTER-v0.1-CANONICAL-MASTER-BUILD-SPEC.md`](./PI-CHARTER-v0.1-CANONICAL-MASTER-BUILD-SPEC.md)
 
 Accepted release delta:
 
@@ -460,5 +453,14 @@ Accepted release delta:
 - fail-closed correction provenance
 - Tasklet dogfood PASS / CLOSED
 
+Sealing is a commit, an annotated tag, and a push. This package is private: no registry publish was
+performed, and no GitHub Release was created.
+
 v0.1.2 does **not** claim child execution attestation by Charter, universal verifier-attested
 acceptance, runtime/scheduler ownership, or cross-runtime lifecycle ownership.
+
+### Previous Release: v0.1.1 (Sealed & Immutable)
+
+- **Sealed commit:** `5c2ccd2149a1f7c08bafa8b71951f88a4e2d7769`
+- **Annotated tag:** `v0.1.1`
+- **Dogfood validation:** Real-world build validation against `tasklet` (local Go CLI with JSON persistence) covering parent implementation, delegated child work, independent review, owner adjudication, and bounded correction.
