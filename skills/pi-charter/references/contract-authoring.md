@@ -16,9 +16,8 @@ Unknown fields are refused, not ignored: the schema is closed.
 **Do not source-hunt to author.** Do not inspect validator/resolver internals merely to author a
 normal `TaskContract` when the required contract fields and boundaries are already defined here. If a
 required field cannot be established truthfully, leave it unresolved and fail closed — do not go
-looking for a convenient value. Never source-hunt to invent `authority` id, `model`, `fallback`,
-capability snapshot, accepted finding, or `execution_target`. Escalate per the ladder in `SKILL.md`
-only on a real evidence gap.
+looking for a convenient value. Never source-hunt to invent `authority` id, `model`, `fallback`, capability evidence, accepted
+finding, or `execution_target`. Escalate per the ladder in `SKILL.md` only on a real evidence gap.
 
 ## Fields and what they mean for the operator
 
@@ -67,8 +66,10 @@ release_forbidden
 
 Declaring one `required` is a claim that instruction-level control is not good enough. In v0.1 only
 `model_selection`, `allowed_tools`, and `allowed_files` can ever reach `ENFORCED`, and only when the
-target's capability snapshot says so; `archaeology_off` and `release_forbidden` always report
-instruction-level. A required constraint that the target cannot hard-enforce refuses the binding —
+run carries trusted, attested capability evidence for that axis AND the contract declares an
+applicable policy; `archaeology_off` and `release_forbidden` always report instruction-level. A raw
+capability claim can never produce `ENFORCED`, and a constraint with no policy is `NOT_APPLICABLE`,
+not secretly enforced. A required constraint that the target cannot hard-enforce refuses the binding —
 Charter does not build the missing primitive to make it pass.
 
 ## Validation/resolution failures that most often bite

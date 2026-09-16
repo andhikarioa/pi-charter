@@ -1,6 +1,6 @@
 ---
 title: Library Usage Reference
-purpose: How to invoke pi-charter correctly — blessed facade first, Pi bridge second, low-level API as advanced use
+purpose: How to invoke pi-charter correctly — blessed facade first, Pi integration second, adapter contract for other substrates, low-level API as advanced use
 audience: agents and developers using pi-charter
 ---
 
@@ -48,10 +48,18 @@ Non-negotiable composition rules the facade enforces for you:
 - No field exists for `role`, `model`, `permissions`, `enforcement_truth`, or a resolved contract:
   a caller supplies inputs, never intermediate artifacts.
 
-## From Pi: prefer the bridge
+## From Pi: prefer the bundled integration
 
-The Pi bridge derives environment evidence from the actual Pi environment instead of asking you for
-it, and refuses anything it cannot observe:
+Pi loads the package's extension and exposes two tools. That is the Pi-native surface: no handwritten
+script, no environment strings, no trust handed to the caller.
+
+```text
+charter_compile           compile a bounded contract for the active session; returns the execution
+                          handle for the exact artifact set it admitted
+charter_verify_execution  verify what this session ran, using that handle
+```
+
+If you are writing TypeScript inside the Pi process, the library bridge is the same integration:
 
 ```ts
 import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
@@ -61,9 +69,11 @@ const compiled = compileViaPi({
   authority_binder: authorityBinder,
   model_profile: profile,
 });
+if (!compiled.ok) throw new Error(JSON.stringify(compiled.errors));
 
-// later: what did this session actually run?
+// later: what did this session actually run? The handle proves which artifact set it was admitted for.
 const verified = verifyExecutionViaPi({
+  execution_handle: compiled.execution_handle,   // required — artifacts alone are not execution evidence
   resolution_receipt: compiled.compiled.resolution_receipt,
   role_envelope: compiled.compiled.role_envelope,
   execution_contract: compiled.compiled.execution_contract,
@@ -81,6 +91,9 @@ Bridge facts to rely on:
 - It attests no fresh session, tool ceiling, or verifier outcome. A contract requiring those gets a
   truthful deviation (`FRESH_SESSION_NOT_EVIDENCED`, `TOOL_POLICY_NOT_EVIDENCED`,
   `ACCEPTANCE_NOT_VERIFIED`), never a green result built on silence.
+- Compilation admits the exact artifact set and returns an opaque execution handle. Verification
+  without a handle is refused; verification with a handle for different artifacts is
+  `NON_CONFORMANT`. Same session, same model, different governance artifact is not a pass.
 - It spawns nothing, schedules nothing, persists nothing, and returns values.
 
 ## Environment evidence: claim vs attestation
@@ -122,6 +135,46 @@ const verdict = verifyExecutionAttestation({
   no verifier outcomes; nothing marked `required` → no enforcement evidence.
 - Evidence must be **issued** by an execution-attestation boundary in the same process. A
   caller-authored object with every field correct is `UNTRUSTED_EXECUTION_EVIDENCE`.
+- Conformance requires the **exact artifact link**. Evidence is issued from the admission the
+  compile minted, and the artifacts you present are checked against it: an artifact supplied only at
+  verification time is a claim about a run, never proof that this process admitted it.
+
+## Adapter integration — for a substrate that owns its runtime
+
+A legitimate adapter integrates through the supported public contract. It supplies OBSERVATIONS; core
+owns TRUST PROMOTION. The adapter never sees an issuer, a verifier factory, or a boundary store:
+
+```ts
+import { createAdapterIntegration } from 'pi-charter';
+
+const adapter = createAdapterIntegration({
+  name: 'my-substrate-adapter',
+  version: '1.0.0',
+  observeEnvironment: () => ({
+    ok: true,
+    observation: {
+      target: 'subagents',            // the runtime this adapter actually is
+      provider: observedProvider,     // observed, never accepted from a caller
+      model: observedModel,
+      session_identity: observedSession,
+      runtime: process.version,
+    },
+  }),
+});
+
+const compiled = adapter.compile({ task_contract, authority_binder, model_profile });
+// … the substrate runs the admitted artifact set …
+const verified = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
+```
+
+Rules the contract enforces:
+
+- There is no parameter for capability booleans, model inventories, trust boundaries, or compiler
+  identity; supplying them is refused by name.
+- A dimension the adapter cannot observe is never attested. The contract issues an explicit
+  unattested capability claim, so a hard requirement refuses instead of passing on silence.
+- An unusable or partial observation fails closed; the adapter's returned facts are the only trusted
+  facts, and they are promoted by core.
 
 ## Low-level API — advanced and internal use only
 
@@ -147,7 +200,8 @@ Low-level cautions:
 - `createResolutionReceipt` re-runs the pipeline from the same environment inputs and refuses a
   claimed binding that does not equal what those inputs produce. Pass the exact artifacts you got.
 - Neither `createAttestationVerifier` nor `createExecutionAttestationIssuer` is on the package
-  surface. An ordinary consumer cannot mint trust at all; in-repo adapters import them directly.
+  surface. An ordinary consumer cannot mint trust at all; use `createAdapterIntegration` for a
+  substrate integration, and never deep-import internal modules.
 
 ## Optional advanced surfaces
 

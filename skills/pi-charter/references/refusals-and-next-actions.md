@@ -15,10 +15,14 @@ truth is an authority change and requires explicit human/project authority.
 ### `INVALID_TASK_CONTRACT`
 
 - **Means:** the contract's shape or a field value is not admissible — unknown field, wrong value,
-  missing required part, unvalidated artifact handed to a later stage.
-- **Inspect:** the reported `path` (dotted field path), then the field's admitted values.
+  missing required part, unvalidated artifact handed to a later stage, or an unavailable/stale
+  compiler build identity.
+- **Inspect:** the reported `path` (dotted field path), then the field's admitted values. When the
+  path is `compiler_identity` and the message names `COMPILER_IDENTITY_MISMATCH`, the running
+  compiled artifact set no longer matches the recorded build identity: rebuild the package before
+  compiling governance.
 - **Must not guess:** a replacement value to satisfy the schema. Do not silently drop a field the
-  work actually needs; fix the field or stop.
+  work actually needs, and do not pass a compiler identity of your own; fix the field or stop.
 
 ### `AUTHORITY_UNRESOLVED`
 
@@ -52,7 +56,8 @@ truth is an authority change and requires explicit human/project authority.
 ### `MODEL_UNAVAILABLE`
 
 - **Means:** the routed tier's preferred model and every declared fallback are unavailable.
-- **Inspect:** the model profile's `fallback` list and the environment availability snapshot.
+- **Inspect:** the model profile's `fallback` list and the model availability evidence for the run
+  (an attested registry inventory, or a raw claim — a claim is weaker and says so).
 - **Must not guess:** another tier's model, a "closest" or same-vendor substitute. Use only a
   declared fallback; otherwise stop.
 
@@ -66,11 +71,11 @@ truth is an authority change and requires explicit human/project authority.
 
 - **Means:** the contract contradicts itself — e.g. a role that needs implementation authority with
   `code_write: false`, same-session review marked `independent`, a `tag`/`push`/`publish`/`deploy`
-  action without its permission, or a capability snapshot describing a different target than the
+  action without its permission, or capability evidence describing a different target than the
   contract selected.
 - **Inspect:** the named `path`.
-- **Must not guess:** which side is "really" meant. Resolve the contradiction explicitly; a
-  snapshot never substitutes for another target's truth.
+- **Must not guess:** which side is "really" meant. Resolve the contradiction explicitly; evidence
+  about one target never substitutes for another target's truth.
 
 ### `HUMAN_DECISION_REQUIRED`
 
@@ -83,10 +88,11 @@ truth is an authority change and requires explicit human/project authority.
 
 ### `UNSUPPORTED_BY_EXECUTION_TARGET`
 
-- **Means:** the contract requires hard enforcement the target cannot supply (truth is `INSTRUCTED`
-  or `UNSUPPORTED`), or requires review capability the target does not have (fresh session,
-  independent review).
-- **Inspect:** the enforcement truth per constraint and the capability snapshot.
+- **Means:** the contract requires hard enforcement the target cannot supply (truth is `INSTRUCTED`,
+  `UNSUPPORTED`, or `NOT_APPLICABLE` for a required constraint), or requires review capability the
+  target does not have (fresh session, independent review). A capability CLAIM can never satisfy
+  this: only trusted, attested evidence plus an applicable policy reaches `ENFORCED`.
+- **Inspect:** the enforcement truth per constraint and the capability evidence for the target.
 - **Must not guess:** that instruction-level control equals enforcement, that a different target
   would obviously be fine, or that independence can be fabricated. Charter does not build the
   missing primitive; switching target requires a new, explicit contract decision.

@@ -23,25 +23,36 @@ TaskContract
 Charter never spawns, supervises, retries, schedules, or recovers work, and holds no worker,
 session, queue, or lifecycle state. It is not an orchestrator, scheduler, or workflow runtime.
 
-## v0.1 usage limitation — read first
+## v0.1.1 usage truth — read first
 
-pi-charter v0.1 ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported
-entry point) and a pure governance compiler surface. There is **no CLI, no Pi extension, no
-`/charter` command, and no `charter(...)` tool**. This skill teaches correct adoption and
-interpretation; it does not execute Charter, and it cannot produce governance artifacts on its own.
+pi-charter v0.1.1 ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported
+entry point) with a bundled **Pi extension**. From Pi, the supported surface is the two tools the
+extension registers — nothing handwritten, nothing temporary:
 
-Two supported ways to invoke it:
+```text
+charter_compile           compile bounded governance for the active session and admit the exact
+                          artifact set for execution; returns an execution handle
+charter_verify_execution  verify what this session ran against that admission, using that handle
+```
+
+Neither tool accepts capability booleans, a model inventory, a trust boundary, or a caller-chosen
+compiler identity: those are derived from the live session or refused. There is no CLI and no
+`/charter` command; the tools are the Pi-native interface.
+
+Two supported library ways to invoke core:
 
 ```text
 compileForTarget          the one blessed facade — use it from a host integration
 compileViaPi / verifyExecutionViaPi
-                          the Pi-native bridge — use it from inside Pi; it derives the environment
-                          evidence itself and mediates the active parent session only
+                          the library bridge — use it from TypeScript inside Pi; it derives the
+                          environment evidence itself and mediates the active parent session only
 ```
 
 Low-level functions (`resolveExecutionContract`, `bindExecutionTarget`,
 `compileBoundRoleEnvelope`, …) remain public for advanced and internal use. Do **not** compose them
 by hand when the facade covers the need, and never feed a target handoff into envelope compilation.
+Adapters integrating their own runtime use the supported `createAdapterIntegration` contract; they
+supply observations and core promotes them into trusted evidence.
 
 ## When to use Charter
 
@@ -91,13 +102,34 @@ subagents and intercom are not required.
 resolved truth into bounded handoff parameters; **Charter does not spawn, track, retry, or supervise
 the child.**
 
-Target is not capability. Capabilities come from an explicit environment-supplied snapshot
-(`model_selection`, `fresh_session`, `tool_ceiling`, `file_scope_enforcement`,
-`independent_review`), and each declared constraint resolves to `ENFORCED`, `INSTRUCTED`, or
-`UNSUPPORTED`. Never claim a capability merely because a target was selected.
+Target is not capability. Capabilities come from environment **evidence**, never from a target name
+or a caller-supplied boolean: a raw `capability_claim` is recorded as an unattested claim and can
+never produce `ENFORCED`. Each declared constraint resolves to exactly one of `ENFORCED` (trusted,
+attested capability plus an applicable canonical policy), `INSTRUCTED` (a policy applies but nothing
+attests hard enforcement), `UNSUPPORTED` (no instruction substitutes for the missing primitive), or
+`NOT_APPLICABLE` (this contract declares no policy for that dimension). Never claim a capability
+merely because a target was selected.
 
 `pi-intercom` is **optional** and external to Charter core. Use it only when communication between
 existing sessions genuinely helps. It is not part of the Charter execution pipeline.
+
+## Evidence truth in v0.1.1
+
+```text
+claim              ≠ attestation           a source name, a version string, and a boundary-shaped
+                                            record establish nothing without the exact boundary that
+                                            issued the candidate
+ENFORCED           = trusted capability evidence + an applicable canonical policy
+NOT_APPLICABLE     no policy for that dimension — nothing to enforce and nothing to instruct
+assertion bound    ≠ assertion verified     only evidence that the exact bound verifier ran and
+                                            passed moves a bound assertion to verified
+ResolutionReceipt  ≠ ExecutionAttestation   a receipt proves what was COMPILED; a run is proven by
+                                            trusted execution evidence
+correct authority  requires accepted finding provenance — a bound authority source grounds a named
+                   finding, it is never itself a finding
+execution          conformance requires the exact artifact link: the admission handle returned when
+                   governance was compiled, not artifacts supplied at verification time
+```
 
 ## Fail-closed operator behavior
 
@@ -197,7 +229,7 @@ must be evidenced, never assumed.
 
 | Need | Read |
 |------|------|
-| Invoke the library correctly (facade first, bridge from Pi, evidence rules) | `references/library-usage.md` |
+| Invoke the library correctly (facade first, Pi integration, adapter contract, evidence rules) | `references/library-usage.md` |
 | Construct a TaskContract | `references/contract-authoring.md` |
 | Choose/understand role or target | `references/roles-and-targets.md` |
 | Interpret refusal / next action | `references/refusals-and-next-actions.md` |

@@ -141,7 +141,10 @@ accepts. A hand-built, copied, cloned, or JSON-roundtripped binding compiles **n
 the composition mistake the facade exists to make unreachable. Low-level functions remain public for
 advanced and internal use; see the companion skill's `library-usage` reference.
 
-From Pi itself, prefer the bridge, which derives the environment evidence for you:
+From Pi itself, prefer the bundled Pi integration. Pi discovers the package's extension and exposes
+two tools — `charter_compile` and `charter_verify_execution` — that observe the live session and hand
+out no trust to the caller. The library bridge below does the same thing when you are already writing
+TypeScript inside the Pi process:
 
 ```ts
 import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
@@ -149,8 +152,11 @@ import { compileViaPi, verifyExecutionViaPi } from 'pi-charter';
 const compiled = compileViaPi({ task_contract: contract, authority_binder, model_profile });
 if (!compiled.ok) throw new Error('Compilation refused');
 
-// After the work ran, check what this session actually did against what was compiled.
+// The compile ADMITS exactly this artifact set for execution and returns the handle that proves it.
+// After the work ran, verify against that admission. Artifacts supplied at verification time are
+// checked against the admission, never promoted into execution evidence.
 const verified = verifyExecutionViaPi({
+  execution_handle: compiled.execution_handle,
   resolution_receipt: compiled.compiled.resolution_receipt,
   role_envelope: compiled.compiled.role_envelope,
   execution_contract: compiled.compiled.execution_contract,
@@ -286,7 +292,9 @@ Charter itself does **not**:
 - manage locks, leases, or worker pools;
 - track task progress or handle retries.
 
-Hard enforcement depends on the selected target's actual capability snapshot. `parent` and `subagents` are execution targets, not permanent capability guarantees.
+Hard enforcement depends on the selected target's actual **capability evidence**, never on the target
+name. `parent` and `subagents` are execution targets, not permanent capability guarantees; a claim
+about a capability is recorded as a claim and can never produce `ENFORCED`.
 
 ### Review Independence
 
@@ -302,7 +310,7 @@ Review independence is bounded by target capability truth:
 | **Independent review** | `review` / `subagents` | Read-only permissions, requires `fresh_session` and `independent_review` capabilities. |
 | **Named correction** | `correct` / `parent` | `correct` may modify only named accepted correction targets in `scope.blockers`; bound authority sources ground those targets but are not themselves findings. |
 | **Semantic adjudication** | `adjudicate` / `parent` | Solves one semantic or contract conflict; routes to `reasoning` tier. |
-| **Enforcement refusal** | Any | Contract requiring hard enforcement unsupported by the target's capability snapshot fails with `UNSUPPORTED_BY_EXECUTION_TARGET`. |
+| **Enforcement refusal** | Any | Contract requiring hard enforcement unsupported by the target's capability evidence fails with `UNSUPPORTED_BY_EXECUTION_TARGET`. |
 
 ---
 
@@ -313,12 +321,21 @@ Review independence is bounded by target capability truth:
 ```json
 {
   "pi": {
+    "extensions": [
+      "./extensions"
+    ],
     "skills": [
       "./skills"
     ]
   }
 }
 ```
+
+The bundled extension is the Pi-native surface: Pi loads it, and it registers `charter_compile` and
+`charter_verify_execution`. `charter_compile` compiles a bounded contract for the active session and
+returns the execution handle for the exact artifact set it admitted; `charter_verify_execution`
+verifies against that admission only. Neither tool accepts capability booleans, a model inventory, a
+trust boundary, or a caller-chosen compiler identity, and neither can mint trust.
 
 The companion skill provides operator and agent adoption guidance:
 - When to apply Charter governance to non-trivial tasks.
@@ -441,6 +458,14 @@ JSON roundtrip — is refused as `UNTRUSTED_EXECUTION_EVIDENCE`. The Pi bridge i
 the session it runs in; an integration that owns a subagents runtime issues it through its own
 adapter. Charter stores no session, run, or workflow state to remember it.
 
+**Execution conformance requires the exact artifact link.** Issuing evidence about a run is not the
+same as proving which governance artifact that run was admitted for. `compileViaPi` (and every
+adapter integration) admits the compiled artifact set and returns an opaque, process-local execution
+handle; verification issues evidence from that admission and checks any supplied artifacts against
+it. Supplying a receipt, an envelope, and a contract at verification time is therefore a claim about a
+run, not evidence that this process admitted them: an unbound artifact is refused, and an artifact
+that was not the admitted one is `NON_CONFORMANT` — no matter that the session and model match.
+
 ---
 
 ## ⚠️ Boundaries / Non-Goals
@@ -483,11 +508,21 @@ npm pack --dry-run
 
 `npm test` compiles the package and then runs the emitted JavaScript tests, so the official path never
 depends on a runtime that happens to execute TypeScript. Supported Node: `engines.node` = `>=22.0.0`.
-The identity a receipt commits to is the digest of the `dist/` artifact set that `npm run build`
-emitted, so a rebuild of unchanged artifacts gives the same identity and any material artifact change
-gives a different one.
+The identity a receipt commits to is the digest of the shipped `dist/` runtime artifact set that
+`npm run build` emitted (test artifacts excluded, exactly as `package.json` excludes them), and it is
+verified against the artifact set actually executing: a rebuild of unchanged artifacts gives the same
+identity, any material runtime artifact change gives a different one, and a modified artifact whose
+record is stale refuses compilation with `COMPILER_IDENTITY_MISMATCH` until an explicit rebuild.
 
-Current test suite baseline: **236 tests, 236 PASS**.
+Bundled integration smokes:
+
+```bash
+npm run smoke:consumer   # pack, install into a throwaway consumer, compile + adapt through the tarball
+npm run smoke:pi         # Pi discovers the extension and calls charter_compile / charter_verify_execution
+npm run smoke:compiler   # tamper a shipped artifact copy: identity mismatch, then rebuild
+```
+
+Current test suite baseline: **252 tests, 252 PASS**.
 
 ---
 

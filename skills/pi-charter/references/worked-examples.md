@@ -46,9 +46,9 @@ acceptance: { assertions: [findings-reported], review: { required: true, indepen
 verification: { level: V3 }
 ```
 
-- **Expected result:** if the snapshot states `fresh_session: true` and `independent_review: true`,
-  the review binds and a handoff is produced carrying the resolved model identity and actual
-  enforcement truth. Otherwise: `UNSUPPORTED_BY_EXECUTION_TARGET`.
+- **Expected result:** if trusted, attested capability evidence establishes `fresh_session` and
+  `independent_review`, the review binds and a handoff is produced carrying the resolved model
+  identity and actual enforcement truth. Otherwise: `UNSUPPORTED_BY_EXECUTION_TARGET`.
 - **Executor may:** read the named scope, evaluate against the named contract, report PASS or
   findings.
 - **Stops at:** read-only scope. A clean PASS is complete — no fix is written by this role, and
@@ -75,7 +75,8 @@ limits: { correction_rounds: 2, semantic_escalations: 1 }
 - **Expected result:** the contract validates and resolves with `blocker-a` carried as the named
   correction target; resolution does not broaden the blocker/file scope. During `RoleEnvelope`
   compilation, `correct` is admitted because at least one named `scope.blocker` exists. The bound
-  authority sources ground that target; they are not themselves findings.
+  authority sources ground that target and its accepted-finding provenance; they are not themselves
+  findings, and current authority does not substitute for acceptance.
 - **Executor may:** apply the accepted correction and verify it with the declared commands.
 - **Stops at:** the named finding. With no named accepted blocker, do not construct a `correct`
   execution at all — and do not invent a new finding to fill the gap.
@@ -127,9 +128,10 @@ requirements:
     release_forbidden: required
 ```
 
-- **Expected result:** with a snapshot where `tool_ceiling: false`, the tool ceiling truth is
+- **Expected result:** with no attested `tool_ceiling` capability, the tool ceiling truth is
   `INSTRUCTED`, so requiring it refuses with `UNSUPPORTED_BY_EXECUTION_TARGET`. `release_forbidden`
-  is always instruction-level in v0.1 and refuses for the same reason.
+  is always instruction-level in v0.1 and refuses for the same reason. A raw capability claim cannot
+  change either result: only attested evidence plus an applicable policy reaches `ENFORCED`.
 - **Executor may:** nothing under this contract.
 - **Stops at:** the refusal. Do not soften the requirement, do not assert that instruction-level
   equals enforcement, and do not switch target on your own — an acceptable target must be a new,

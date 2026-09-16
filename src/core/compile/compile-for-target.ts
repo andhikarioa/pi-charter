@@ -141,7 +141,9 @@ export function compileForTarget(input: unknown): CompileForTargetResult {
   if (errors.length > 0) return { ok: false, errors };
 
   // H1 — the compiler identity is read from the real compiled artifact set this package was built
-  // into. A caller never supplies it, and no identity is fabricated when the build is absent.
+  // into, and verified against the artifact set actually executing (F2). A caller never supplies it,
+  // no identity is fabricated when the build is absent, and a stale record refuses instead of
+  // authorizing a modified artifact set.
   const compilerIdentity = readCompilerIdentity();
   if (!compilerIdentity.ok) {
     return {
@@ -150,7 +152,7 @@ export function compileForTarget(input: unknown): CompileForTargetResult {
         {
           code: 'INVALID_TASK_CONTRACT',
           path: 'compiler_identity',
-          message: `the compiler build identity is unavailable (${compilerIdentity.reason}); build the package before compiling governance`,
+          message: `the compiler build identity is unavailable or stale (${compilerIdentity.reason}); rebuild the package before compiling governance`,
         },
       ],
     };

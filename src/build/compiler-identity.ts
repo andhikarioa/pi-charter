@@ -1,25 +1,34 @@
 /**
- * Compiler build identity (v0.1.1 Wave 2 — H1 final).
+ * Compiler build identity (v0.1.1 Wave 2 — H1; final correction — F2).
  *
  * Wave 1 created the requirement: a `ResolutionReceipt` must commit to the identity of the compiler
  * artifact that ran resolution, and that identity must not be a restatement of the product version.
  * Wave 1 deliberately refused to invent one. Wave 2 supplies the real thing:
  *
- *   compiler_identity = SHA-256 over the defined compiled artifact set (`dist/**` `.js` + `.d.ts`)
+ *   compiler_identity = SHA-256 over the defined shipped runtime artifact set
+ *                       (`dist/**` `.js` plus `.d.ts`, minus test artifacts)
  *
- * Properties, both directly testable:
+ * Properties, all directly testable:
  *
- *   same build artifact             → same compiler identity
- *   material compiled artifact change → different compiler identity
+ *   same build artifact              → same compiler identity
+ *   material runtime artifact change → different compiler identity
+ *   tampered artifact + stale record → COMPILER_IDENTITY_MISMATCH, compilation refused
  *
  * It is NOT: an operator-typed string, a hardcoded SHA, a date-based label, and not the package
  * version wearing an artifact identity's clothes. `npm run build` compiles the package and then
  * writes the digest it computed over exactly those emitted files into `compiler-identity.json` at the
  * package root, so the identity always describes the artifact set that was actually built.
  *
- * The file is read at resolution time and nothing else is: no clock, no Git, no environment, no
- * network. A missing build identity is reported as missing — the facade refuses rather than
- * fabricating one.
+ * The final correction closes the stale-record hole: reading the identity RECOMPUTES the digest of
+ * the artifact set this process is actually executing and compares it with the recorded one. A
+ * modified runtime artifact therefore cannot keep using an identity that was computed before the
+ * modification — the record is an expectation to verify, never an authority to trust.
+ *
+ * The artifact set is deterministic and local: `.js` and `.d.ts` under `dist`, test artifacts
+ * excluded exactly as `package.json` excludes them from the shipped package, sorted by relative path,
+ * hashed per content. No clock, no Git, no environment, no network, and the record file itself is
+ * never part of the set. A missing or mismatched build identity is reported — the facade refuses
+ * rather than fabricating or silently regenerating one.
  */
 
 import { createHash } from 'node:crypto';
@@ -33,12 +42,23 @@ export const COMPILER_IDENTITY_FILE = 'compiler-identity.json';
 /** The compiled artifact extensions the identity is taken over. Source and tests are not artifacts. */
 const ARTIFACT_EXTENSIONS = ['.js', '.d.ts'] as const;
 
+/**
+ * Artifacts excluded from the shipped/runtime set. These are exactly the exclusions `package.json`
+ * applies to `dist` in `files`: a test artifact is not part of the runtime package, so it neither
+ * defines the runtime identity nor can a change to it invalidate a legitimate build.
+ */
+const EXCLUDED_ARTIFACT_SUFFIXES = ['.test.js', '.test.d.ts'] as const;
+
 /** The package root, resolved identically from `src/build/` and from `dist/build/`. */
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
+/** The runtime artifact root this process executes from, resolved identically from `src/` and `dist/`. */
+const RUNTIME_ARTIFACT_ROOT = resolve(PACKAGE_ROOT, 'dist');
+
 /**
- * Every compiled artifact under `dir`, as `/`-separated paths relative to it, sorted. Sorting makes
- * the digest independent of directory-enumeration order.
+ * Every shipped/runtime compiled artifact under `dir`, as `/`-separated paths relative to it, sorted.
+ * Sorting makes the digest independent of directory-enumeration order; test-only artifacts are
+ * excluded because they are not part of the runtime package artifact set.
  */
 export function listCompiledArtifacts(dir: string): string[] {
   const artifacts: string[] = [];
@@ -50,7 +70,9 @@ export function listCompiledArtifacts(dir: string): string[] {
         continue;
       }
       const relativePath = relative(dir, path).split(sep).join('/');
-      if (ARTIFACT_EXTENSIONS.some((extension) => relativePath.endsWith(extension))) artifacts.push(relativePath);
+      if (!ARTIFACT_EXTENSIONS.some((extension) => relativePath.endsWith(extension))) continue;
+      if (EXCLUDED_ARTIFACT_SUFFIXES.some((suffix) => relativePath.endsWith(suffix))) continue;
+      artifacts.push(relativePath);
     }
   };
   walk(resolve(dir));
@@ -83,16 +105,30 @@ export function writeCompilerIdentity(dir: string): string {
   return compilerIdentity;
 }
 
+/** Where `readCompilerIdentity` looks by default, injectable so a tampered copy can be probed. */
+export interface CompilerIdentitySource {
+  /** Directory holding the compiled artifact set actually executing (default: `dist/`). */
+  artifactsDir?: string;
+  /** Path of the recorded identity to verify (default: `<package root>/compiler-identity.json`). */
+  recordPath?: string;
+}
+
 /**
  * The identity of the compiler artifact set this process is running from, fail-closed.
  *
- * Absent or malformed means the package was never built: that is reported as the reason, never
- * papered over with a fallback identity.
+ * The recorded identity is an EXPECTATION: it is verified against the current digest of the artifact
+ * set being executed. Absent, malformed, or stale means compilation is refused — a missing record is
+ * never papered over with a fallback identity, and a mismatched record is never silently regenerated,
+ * because a modified artifact must require an explicit rebuild before compilation can succeed.
  */
-export function readCompilerIdentity(): { ok: true; compiler_identity: string } | { ok: false; reason: string } {
+export function readCompilerIdentity(source: CompilerIdentitySource = {}):
+  | { ok: true; compiler_identity: string }
+  | { ok: false; reason: string } {
+  const artifactsDir = source.artifactsDir ?? RUNTIME_ARTIFACT_ROOT;
+  const recordPath = source.recordPath ?? resolve(PACKAGE_ROOT, COMPILER_IDENTITY_FILE);
   let raw: string;
   try {
-    raw = readFileSync(resolve(PACKAGE_ROOT, COMPILER_IDENTITY_FILE), 'utf8');
+    raw = readFileSync(recordPath, 'utf8');
   } catch {
     return { ok: false, reason: `no compiled build identity at ${COMPILER_IDENTITY_FILE}` };
   }
@@ -105,6 +141,20 @@ export function readCompilerIdentity(): { ok: true; compiler_identity: string } 
   const identity = (parsed as { compiler_identity?: unknown } | null)?.compiler_identity;
   if (typeof identity !== 'string' || identity.trim().length === 0) {
     return { ok: false, reason: `${COMPILER_IDENTITY_FILE} carries no compiler identity` };
+  }
+  // The record is verified against what is actually executing. A stale record (the artifact set
+  // changed after the build) is reported, not trusted and not regenerated.
+  let current: string;
+  try {
+    current = computeCompilerIdentity(artifactsDir);
+  } catch {
+    return { ok: false, reason: `the runtime compiler artifact set is not readable at ${COMPILER_IDENTITY_FILE}'s package` };
+  }
+  if (current !== identity) {
+    return {
+      ok: false,
+      reason: `COMPILER_IDENTITY_MISMATCH: ${COMPILER_IDENTITY_FILE} records ${identity} but the executing ${artifactsDir} artifact set digests to ${current}; rebuild before compiling`,
+    };
   }
   return { ok: true, compiler_identity: identity };
 }

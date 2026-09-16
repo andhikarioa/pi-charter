@@ -4,6 +4,9 @@
   "private": true,
   "description": "Deterministic, fail-closed governance compiler for bounded Pi work: contracts, routing, execution-target truth, role envelopes, and bounded next actions.",
   "type": "module",
+  "keywords": [
+    "pi-package"
+  ],
   "engines": {
     "node": ">=22.0.0"
   },
@@ -17,11 +20,15 @@
     "dist",
     "!dist/**/*.test.js",
     "!dist/**/*.test.d.ts",
+    "extensions",
     "skills",
     "compiler-identity.json",
     "README.md"
   ],
   "pi": {
+    "extensions": [
+      "./extensions"
+    ],
     "skills": [
       "./skills"
     ]
@@ -31,6 +38,9 @@
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node scripts/run-tests.mjs",
     "verify": "npm run typecheck && npm test && npm pack --dry-run",
+    "smoke:compiler": "node scripts/compiler-tamper-smoke.mjs",
+    "smoke:pi": "node scripts/pi-integration-smoke.mjs",
+    "smoke:consumer": "node scripts/consumer-smoke.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {

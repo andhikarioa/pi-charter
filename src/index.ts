@@ -80,3 +80,8 @@ export type {
 } from './core/execution/execution-attestation.ts';
 export * from './core/compile/compile-for-target.ts';
 export * from './bridge/pi-bridge.ts';
+// Final correction (F1/F3): the one supported adapter-facing integration contract. An external
+// substrate adapter registers observations and core promotes them into trusted evidence; compile-time
+// admission handles carry the exact execution artifact link. The raw execution-evidence issuer, the
+// attestation verifier factory, and the process-local boundary stores stay absent from this surface.
+export * from './integration/adapter-integration.ts';

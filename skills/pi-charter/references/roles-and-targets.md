@@ -6,8 +6,8 @@
 role   ≠ permission   A role states governance purpose; permissions are granted by the contract
                       and can only be narrowed in resolution, never widened.
 role   ≠ model        Core routing maps the role to a model tier. Never name a model yourself.
-target ≠ capability   Selecting `subagents` grants nothing; capabilities come from an explicit
-                      environment snapshot bound to that target.
+target ≠ capability   Selecting `subagents` grants nothing; capability requires trusted, attested
+                      evidence about that target — a claim about it proves nothing.
 ```
 
 ## The five roles
@@ -50,8 +50,10 @@ independent.
 Purpose: apply only frozen, accepted findings from a prior review or adjudication result.
 
 - writes are task-controlled; input scope is accepted findings only
-- requires **named accepted findings**. With no named accepted blocker/finding, do not construct a
-  `correct` execution: there is nothing admitted to correct
+- requires **named accepted findings with provenance**. With no named accepted blocker/finding, do not
+  construct a `correct` execution: there is nothing admitted to correct
+- a bound authority source grounds a named finding; it is never itself a finding, and current
+  authority does not substitute for accepted-finding provenance
 - must not reopen the reviewer's jurisdiction or invent additional findings
 
 ### `adjudicate`
@@ -74,8 +76,9 @@ adjudicate                     → reasoning tier
 ```
 
 Task class and risk are routing inputs but do not change the tier in v0.1. Charter resolves
-preferred/fallback models under the environment's availability snapshot; it never substitutes a
-guess. Do not name models, tiers, or fallbacks in plans, prompts, or handoffs.
+preferred/fallback models under the availability EVIDENCE supplied for the run: an attested registry
+inventory is trusted truth, and a raw list is recorded as a claim. It never substitutes a guess. Do
+not name models, tiers, or fallbacks in plans, prompts, or handoffs.
 
 ## Execution targets
 
@@ -93,28 +96,35 @@ truth into bounded handoff parameters (role, resolved model identity, fresh-sess
 enforcement truth, contract). It spawns no child, tracks no child, retries nothing, and owns no
 worktree, process, lock, or child lifecycle — that is substrate responsibility.
 
-Selecting `subagents` is not a capability claim. Actual capability is whatever the environment's
-snapshot states.
+Selecting `subagents` is not a capability claim. Capability is exactly what the run's environment
+evidence establishes — never what the target name suggests.
 
-## Capability axes and enforcement truth
+## Capability evidence and enforcement truth
 
-Capability snapshot axes (all five must be stated explicitly):
+Capability axes (all five must be stated explicitly when a capability is supplied):
 
 ```text
 model_selection · fresh_session · tool_ceiling · file_scope_enforcement · independent_review
 ```
 
+A raw claim is recorded as an `unattested_claim` and can never produce `ENFORCED`. Only trusted,
+attested capability evidence — the exact boundary that issued it — plus an applicable canonical
+policy reaches `ENFORCED`.
+
 Enforcement truth per declared constraint:
 
 ```text
-ENFORCED     the target hard-enforces it
-INSTRUCTED   the instruction genuinely reaches the target, but compliance is unprovable
-UNSUPPORTED  no instruction substitutes for the missing primitive
+ENFORCED          trusted, attested capability + an applicable canonical policy
+INSTRUCTED        a policy applies, but nothing attests hard enforcement
+UNSUPPORTED       no instruction substitutes for the missing primitive
+NOT_APPLICABLE    this contract declares no policy for that dimension
 ```
 
 `model_selection` is `UNSUPPORTED` (not `INSTRUCTED`) without the capability, because no prompt can
 change which model actually executes. `archaeology_off` and `release_forbidden` are always
 `INSTRUCTED`: the prohibition reaches the worker, but the target cannot prove compliance.
+`NOT_APPLICABLE` is not a softer `ENFORCED`, and it is not "all tools allowed" — there is simply no
+policy to enforce.
 
 ## Intercom
 
