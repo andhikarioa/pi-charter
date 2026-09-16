@@ -39,6 +39,20 @@
  * a compatibility alias for it: an invocation that worked against the released Pi tool surface still
  * works, because a public tool schema is a contract and this release is a UX patch, not a break.
  * Neither path weakens core validation — both end at the same Phase 1 contract validator.
+ *
+ * One governance-bearing input is not a contract field and is therefore stated beside the contract: an
+ * accepted correction target. `role=correct` may apply only findings that were already accepted, and
+ * core resolves two evidence links per target — the finding, and the explicit owner acceptance of it.
+ * Neither is something core can derive, and requiring the operator to construct binder internals is
+ * what made this path unreachable, so the operator states references:
+ *
+ *   correction_authority: [{ target: 'P1', finding: 'review-finding:P1', acceptance: 'owner-acceptance:P1' }]
+ *        ↓  the package builds the live CorrectionAuthorityBinder core already takes
+ *   declared correction target → finding provenance → acceptance provenance
+ *
+ * Stating a target admits nothing by itself: the identifiers are evidence REFERENCES, and an identity
+ * that does not resolve to exactly one piece of evidence still fails closed in core. There is no
+ * boolean to pass and no binder to hand-build — the seam stays exactly as strict as it was.
  */
 
 import { readFileSync, realpathSync, statSync } from 'node:fs';
@@ -60,6 +74,7 @@ import {
   type TaskClass,
   type TaskContract,
 } from '../core/contracts/task-contract.ts';
+import type { CorrectionAuthorityBinder } from '../core/correction/correction-authority.ts';
 import { createEvidenceBinder } from '../core/provenance/evidence.ts';
 import type { DelegationFreshContext } from '../delegation/compile-delegation.ts';
 
@@ -85,9 +100,13 @@ const OPERATOR_KEYS = [
   'gates',
   'task_contract',
   'authority_evidence',
+  'correction_authority',
 ] as const;
 
 const AUTHORITY_EVIDENCE_KEYS = ['source', 'doc', 'revision'] as const;
+
+/** The keys one operator-stated accepted correction target admits. Anything else fails closed. */
+const CORRECTION_TARGET_KEYS = ['target', 'finding', 'acceptance'] as const;
 
 export interface NormalizedOperatorRequest {
   /** Which surface produced this request. Both end at the same canonical validation. */
@@ -100,6 +119,11 @@ export interface NormalizedOperatorRequest {
   authority_binder: AuthorityBinder;
   /** Set only for a simple request that named a local authority document. */
   authority_document?: { reference: string; path: string };
+  /**
+   * The live correction-authority binder for stated accepted correction targets. Built here from the
+   * stated evidence references, so no caller ever constructs binder internals.
+   */
+  correction_binder?: CorrectionAuthorityBinder;
   /**
    * The delegation dispatch requirement the operator stated, normalized. `NOT_REQUIRED` is the
    * absence of a requirement, never an observation that a fresh session happened.
@@ -248,6 +272,10 @@ function normalizeAdvanced(
   if (evidence.revision !== undefined && !isNonEmptyString(evidence.revision)) {
     err('AUTHORITY_UNRESOLVED', `${evidencePath}.revision`, `${evidencePath}.revision must be a non-empty revision identity when stated`);
   }
+  // The advanced path states its own contract, so a correction target's declared ids are the
+  // contract's to declare: the operator supplies the evidence links, and core decides whether they
+  // resolve for the blockers that contract actually names.
+  const correction = normalizeCorrectionAuthority(input.correction_authority, err);
   if (errors.length > 0) return { ok: false, errors };
   const reference = (source as string).trim();
   return {
@@ -262,6 +290,7 @@ function normalizeAdvanced(
           ...(isNonEmptyString(evidence.revision) ? { revision: evidence.revision.trim() } : {}),
         },
       }),
+      ...(correction ? { correction_binder: correction.binder } : {}),
       fresh_context: 'NOT_REQUIRED',
     },
   };
@@ -312,6 +341,7 @@ function normalizeSimple(
   if (freshValue !== undefined && !isOneOf(freshValue, OPERATOR_FRESH_VALUES)) {
     err('INVALID_TASK_CONTRACT', 'fresh', `fresh must be one of ${OPERATOR_FRESH_VALUES.join('|')} when stated`);
   }
+  const correction = normalizeCorrectionAuthority(input.correction_authority, err);
   if (errors.length > 0) return { ok: false, errors };
 
   const roleName = role as Role;
@@ -333,6 +363,35 @@ function normalizeSimple(
     };
   }
 
+  // Correction authority and the role that may use it are two halves of one statement: a corrector
+  // with nothing accepted has nothing to correct, and a role whose purpose is not correction cannot
+  // be handed correction authority. Neither half is filled in here — an unstated half is a refusal.
+  if (roleName === 'correct' && correction === undefined) {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'CONTRACT_CONTRADICTION',
+          path: 'correction_authority',
+          message:
+            "role=correct applies only findings that were already accepted, so it must state the accepted correction target(s) as correction_authority [{ target, finding, acceptance }]; a blocker identifier alone authorizes nothing",
+        },
+      ],
+    };
+  }
+  if (correction !== undefined && roleName !== 'correct') {
+    return {
+      ok: false,
+      errors: [
+        {
+          code: 'CONTRACT_CONTRADICTION',
+          path: 'correction_authority',
+          message: `correction_authority admits accepted correction targets, and role '${roleName}' cannot correct: state role=correct, or drop correction_authority`,
+        },
+      ],
+    };
+  }
+
   const document = resolveLocalAuthority((authority as string).trim(), root);
   if (!document.ok) return { ok: false, errors: [document.error] };
 
@@ -344,7 +403,7 @@ function normalizeSimple(
     execution_target: targetName,
     root,
     authority: { sources: [document.reference] },
-    scope: scopeEntries(scope),
+    scope: scopeEntries(scope, correction?.targets ?? []),
     permissions: permissionsForRole(roleName),
     acceptance: acceptanceFor(gates),
     verification: { level: OPERATOR_DEFAULT_VERIFICATION_LEVEL },
@@ -357,6 +416,7 @@ function normalizeSimple(
       authority_reference: document.reference,
       authority_binder: document.binder,
       authority_document: { reference: document.reference, path: document.path },
+      ...(correction ? { correction_binder: correction.binder } : {}),
       fresh_context: fresh === 'required' ? 'REQUIRED' : 'NOT_REQUIRED',
     },
   };
@@ -470,9 +530,16 @@ function acceptanceFor(gates: string[]): Acceptance {
  * the work may happen. A scope the operator stated is never widened, never repaired, and never
  * replaced by a default; a wildcard scope still fails closed in core unless the contract explicitly
  * admits unrestricted scope.
+ *
+ * A stated accepted correction target becomes a `scope.blockers` entry, because that is where core
+ * reads WHAT may be corrected: the identifier is the same one the correction binder is keyed by, so a
+ * target that resolves to no evidence admits no correction rather than being dropped from the scope.
  */
-function scopeEntries(entries: string[]): Scope {
-  return entries.length > 0 ? { directories: [...entries] } : {};
+function scopeEntries(entries: string[], blockers: string[]): Scope {
+  return {
+    ...(entries.length > 0 ? { directories: [...entries] } : {}),
+    ...(blockers.length > 0 ? { blockers: [...blockers] } : {}),
+  };
 }
 
 /** Read a list-or-string field. A string is one entry unless it states several lines. */
@@ -501,6 +568,94 @@ function toEntries(
     entries.push(entry.trim());
   }
   return entries;
+}
+
+/**
+ * Normalize the operator's accepted correction targets into the live binder core takes.
+ *
+ * `role=correct` is admitted only for findings that were already accepted, and core resolves TWO
+ * evidence links per target: the finding itself, and the explicit owner acceptance of it. The operator
+ * states both as evidence REFERENCES — symbolic identities, not booleans and not prose — and this
+ * module builds the binder, so no caller constructs binder internals and no trusted flag exists to
+ * pass. Stating a target authorizes nothing on its own: an identity that does not resolve to exactly
+ * one piece of evidence still fails closed in core, and a target stated twice is ambiguous, so it is
+ * refused here rather than collapsed onto one entry.
+ */
+function normalizeCorrectionAuthority(
+  value: unknown,
+  err: (code: CharterErrorCode, path: string, message: string) => void,
+): { binder: CorrectionAuthorityBinder; targets: string[] } | undefined {
+  if (value === undefined) return undefined;
+  const path = 'correction_authority';
+  if (!Array.isArray(value) || value.length === 0) {
+    err(
+      'CONTRACT_CONTRADICTION',
+      path,
+      `${path} must be a non-empty list of accepted correction targets, one entry per finding: { target, finding, acceptance }`,
+    );
+    return undefined;
+  }
+  const findings = new Map<string, string>();
+  const acceptances = new Map<string, string>();
+  for (const [index, entry] of value.entries()) {
+    const at = `${path}[${index}]`;
+    if (!isRecord(entry)) {
+      err('CONTRACT_CONTRADICTION', at, `${at} must be an object { target, finding, acceptance }`);
+      continue;
+    }
+    for (const key of Object.keys(entry)) {
+      if (!(CORRECTION_TARGET_KEYS as readonly string[]).includes(key)) {
+        err(
+          'CONTRACT_CONTRADICTION',
+          `${at}.${key}`,
+          `unknown field '${at}.${key}'; a correction target states exactly target, finding, and acceptance`,
+        );
+      }
+    }
+    const target = entry.target;
+    const finding = entry.finding;
+    const acceptance = entry.acceptance;
+    if (!isNonEmptyString(target)) {
+      err(
+        'CONTRACT_CONTRADICTION',
+        `${at}.target`,
+        `${at}.target must name the correction target exactly as scope declares it`,
+      );
+    }
+    if (!isNonEmptyString(finding)) {
+      err(
+        'CONTRACT_CONTRADICTION',
+        `${at}.finding`,
+        `${at}.finding must be the evidence reference for the finding itself; a target with no finding evidence is not correctable`,
+      );
+    }
+    if (!isNonEmptyString(acceptance)) {
+      err(
+        'CONTRACT_CONTRADICTION',
+        `${at}.acceptance`,
+        `${at}.acceptance must be the evidence reference for the explicit owner acceptance of that finding; an unaccepted finding is not correction authority`,
+      );
+    }
+    if (!isNonEmptyString(target) || !isNonEmptyString(finding) || !isNonEmptyString(acceptance)) continue;
+    const id = target.trim();
+    if (findings.has(id)) {
+      err(
+        'CONTRACT_CONTRADICTION',
+        `${at}.target`,
+        `correction target '${id}' is stated more than once; an ambiguous target admits no correction`,
+      );
+      continue;
+    }
+    findings.set(id, finding.trim());
+    acceptances.set(id, acceptance.trim());
+  }
+  return {
+    binder: {
+      findings: createEvidenceBinder(Object.fromEntries(findings)),
+      acceptances: createEvidenceBinder(Object.fromEntries(acceptances)),
+    },
+    targets: [...findings.keys()],
+  };
 }
 
 /** A stable task identity derived from the task statement: same statement, same contract identity. */

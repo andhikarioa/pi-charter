@@ -309,6 +309,30 @@ const compileTool: Parameters<PiExtensionApi['registerTool']>[0] = {
         items: { type: 'string' },
         description: 'The acceptance command gates, e.g. ["go test ./internal/store/...", "go vet ./internal/store/..."].',
       },
+      correction_authority: {
+        type: 'array',
+        description:
+          'Accepted correction targets, for role=correct: one entry per finding, stating the target id and the two evidence references that authorize it (the finding itself, and the explicit owner acceptance of it). Converted package-side into the live correction-authority binder — the operator never constructs binder internals. Stating a target admits nothing by itself: an unstated, unknown, or ambiguous reference is not admitted.',
+        items: {
+          type: 'object',
+          properties: {
+            target: {
+              type: 'string',
+              description: 'The correction target id, exactly as the contract scope declares it (e.g. P1).',
+            },
+            finding: {
+              type: 'string',
+              description: 'Evidence reference for the finding itself (e.g. review-finding:P1: the review that reported it).',
+            },
+            acceptance: {
+              type: 'string',
+              description: 'Evidence reference for the explicit owner acceptance of that finding.',
+            },
+          },
+          required: ['target', 'finding', 'acceptance'],
+          additionalProperties: false,
+        },
+      },
       // ── Advanced path (unchanged) ───────────────────────────────────────────
       task_contract: {
         type: 'object',
@@ -369,6 +393,7 @@ async function compileRequest(
     const delegation = compileDelegation({
       task_contract: request.task_contract,
       authority_binder: request.authority_binder,
+      correction_binder: request.correction_binder,
       model_profile: modelProfile,
       // The CLAIM channel: what this environment admits, and nothing about the child.
       available: [observed.observation.model],
@@ -403,6 +428,7 @@ async function compileRequest(
   const compiled = integration.compile({
     task_contract: request.task_contract,
     authority_binder: request.authority_binder,
+    correction_binder: request.correction_binder,
     model_profile: modelProfile,
   });
   if (!compiled.ok) {
