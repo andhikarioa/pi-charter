@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.1 — maintenance release (2026-09-17)
+
+- Fresh-clone verification now owns its build prerequisite.
+- Historical design/process documents archived under `docs/archive/`.
+- Explicit MIT license metadata.
+- Minimal GitHub verification workflow for push/pull_request.
+- No runtime or compiler semantic changes.
+
 ## v0.2.0 — lean architecture release (2026-09-17)
 
 Pi Charter stops at compilation/policy. This release is a **breaking SDK/API cleanup**: the

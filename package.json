@@ -1,7 +1,8 @@
 {
   "name": "pi-charter",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
+  "license": "MIT",
   "description": "Deterministic, fail-closed governance compiler for bounded Pi work: authority, scope, routing, capability truth, bounded instructions, and receipts.",
   "type": "module",
   "keywords": [
@@ -38,7 +39,7 @@
     "build": "node scripts/build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "npm run build && node scripts/run-tests.mjs",
-    "verify": "npm run typecheck && npm test && npm pack --dry-run",
+    "verify": "npm run build && npm run typecheck && npm test && npm pack --dry-run",
     "smoke:compiler": "node scripts/compiler-tamper-smoke.mjs",
     "smoke:pi": "node scripts/pi-integration-smoke.mjs",
     "smoke:consumer": "node scripts/consumer-smoke.mjs",

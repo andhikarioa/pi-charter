@@ -195,24 +195,31 @@ Those boundaries are deliberate.
 
 ## Verification
 
+Canonical path from a clean checkout:
+
 ```bash
-npm run typecheck
-npm test
+npm ci
+npm run verify
+```
+
+`npm run verify` builds the package, typechecks it, runs the deterministic test suite, and validates the packed contents. It owns its own build prerequisite, so no manual pre-build step is required.
+
+Additional checks:
+
+```bash
 npm run smoke:compiler
 npm run smoke:consumer
 npm run smoke:pi       # when Pi is installed in the environment
-npm pack --dry-run
 ```
 
-`npm test` builds the package and runs the deterministic test suite. `smoke:compiler` checks compiler-artifact identity tamper detection. `smoke:consumer` installs the packed package into an external consumer and verifies the supported public surface. `smoke:pi` verifies the Pi-native one-tool integration when Pi is available.
+`smoke:compiler` checks compiler-artifact identity tamper detection. `smoke:consumer` installs the packed package into an external consumer and verifies the supported public surface. `smoke:pi` verifies the Pi-native one-tool integration when Pi is available.
 
 ## Release minimum
 
 For this private one-operator package, the intended release path is deliberately boring:
 
 ```text
-typecheck
-→ tests
+npm run verify
 → compiler smoke
 → consumer smoke
 → Pi smoke when available
@@ -230,11 +237,9 @@ Active maintainership docs:
 
 - `README.md` — usage and current product truth.
 - `ARCHITECTURE.md` — one-page mental model and protected invariants.
-- `PI-CHARTER-LEAN-ARCHITECTURE-AUDIT.md` — evidence behind the slimming decision.
-- `PI-CHARTER-SLIMMING-BUILD-PLAN.md` — bounded wave authority for this slimming cycle.
 - `CHANGELOG.md` — short current change record.
 
-Historical build/dogfood documents remain in the repository as history, but are not required reading for ordinary maintenance.
+Historical design/build records are archived under `docs/archive/`; they are history, not required reading for ordinary maintenance.
 
 ## Current constraints
 
@@ -243,3 +248,7 @@ Historical build/dogfood documents remain in the repository as history, but are 
 - Pi-native public tool count: one (`charter_compile`).
 - Package does not claim execution proof after compile/handoff.
 - Task class/risk/V-level taxonomy remains current contract vocabulary; this slimming cycle intentionally does not redesign it.
+
+## License
+
+MIT.
