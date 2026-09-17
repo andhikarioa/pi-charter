@@ -71,7 +71,7 @@ test('CN1 — a subagents contract compiles to a READY handoff without child-run
   assert.equal('execution_handle' in result.handoff, false);
   // The artifacts themselves are the canonical ones — the delegation path composes nothing new.
   assert.equal(result.compiled.execution_contract.execution_target, 'subagents');
-  assert.equal(result.compiled.resolution_receipt.resolved_role, 'implement');
+  assert.equal(result.compiled.resolution_receipt.role, 'implement');
 });
 
 test('CN1 — the handoff preserves exactly the bounded authority that was compiled', () => {
@@ -129,7 +129,7 @@ test('CN1 — nothing about the child is attested, and no constraint reaches ENF
   // enforcement is not proven.
   assert.equal(result.handoff.enforcement.allowed_tools, 'INSTRUCTED');
   assert.deepEqual(result.handoff.allowed_tools, ['read', 'edit']);
-  assert.equal(result.compiled.role_envelope.enforcement_truth.allowed_tools, 'INSTRUCTED');
+  assert.equal(result.compiled.target_binding.enforcement.allowed_tools, 'INSTRUCTED');
 });
 
 test('CN1 — a contract state this surface cannot establish is refused, never softened', () => {

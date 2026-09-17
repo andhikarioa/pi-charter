@@ -1,4 +1,4 @@
-# Refusals and bounded next actions
+# Refusals and next operator actions
 
 Charter is fail-closed: it refuses rather than reporting softer truth. A refusal is information, not
 an obstacle. Read it, satisfy the real missing authority, and re-run — or stop.
@@ -94,12 +94,9 @@ truth is an authority change and requires explicit human/project authority.
 
 ### `HUMAN_DECISION_REQUIRED`
 
-- **Means:** the bounded decision space is exhausted or has no truthful member: a declared limit was
-  reached, an architecture contradiction has no Charter authority behind it, adjudication reached no
-  bounded decision, or a resolved adjudication supplied no usable downstream role.
-- **Inspect:** the execution outcome, the explicit counters, and `limits`.
-- **Must not guess:** raise a limit, loop the same escalation, re-adjudicate, or self-assign the next
-  step. Stop and ask a human.
+- **Means:** current truth is ambiguous and Charter has no authority to choose the missing decision.
+- **Inspect:** the named contradiction or missing owner choice.
+- **Must not guess:** a permission, authority source, architecture choice, or downstream task. Stop and ask the owner; any later correction/adjudication is a new explicitly bounded Charter task.
 
 ### `UNSUPPORTED_BY_EXECUTION_TARGET`
 
@@ -112,45 +109,6 @@ truth is an authority change and requires explicit human/project authority.
   would obviously be fine, or that independence can be fabricated. Charter does not build the
   missing primitive; switching target requires a new, explicit contract decision.
 
-## Bounded next-action vocabulary
+## After a refusal
 
-Charter may decide exactly one bounded next action from a finished outcome plus explicit counters:
-
-```text
-PASS                             the declared acceptance was satisfied; stop
-RETRY_SAME_ROLE                  one clean retry is admitted for the same role
-ADJUDICATE                       one bounded adjudication is admitted (role: adjudicate)
-DE_ESCALATE_TO_ROLE              return to the explicitly supplied downstream role
-HUMAN_DECISION_REQUIRED          autonomous progression stops
-STOP_MODEL_UNAVAILABLE           no model is re-selected or re-routed
-STOP_UNSUPPORTED_BY_EXECUTION_TARGET  the capability gap stands; the target is not switched
-```
-
-These are decisions, not lifecycle states. No `QUEUED`, `RUNNING`, `WAITING`, `BLOCKED_WORKER`,
-`RESUMING`, or `RECOVERING` exists — Charter cannot express them, so it cannot return them.
-
-### Outcomes and counters
-
-Admitted execution outcomes (evidence of finished bounded work, not worker state):
-
-```text
-SUCCESS · MECHANICAL_FAILURE · SEMANTIC_AMBIGUITY · AUTHORITY_CONTRADICTION
-ARCHITECTURE_CONTRADICTION · MODEL_UNAVAILABLE · EXECUTION_TARGET_UNSUPPORTED
-ADJUDICATION_RESOLVED · ADJUDICATION_UNRESOLVED
-```
-
-Counters are explicit and never defaulted (an absent counter is not zero):
-
-```text
-clean_retries_used · correction_rounds_used · semantic_escalations_used
-```
-
-Behavior worth remembering:
-
-- the one-clean-retry policy is a policy constant, not a contract limit
-- one `correct` pass is one correction round, bounded by `limits.correction_rounds`
-- semantic ambiguity and authority contradiction share one escalation bound
-- `ARCHITECTURE_CONTRADICTION` is a human decision — Charter holds no architecture authority
-- a resolved adjudication de-escalates only to an explicitly supplied downstream role, never back to
-  the adjudicator; a missing or self-referential downstream role is a human decision
-- adjudication outcomes are only accepted from an adjudicating run
+Charter does not own a retry/escalation workflow. Resolve the refusal at its source, then submit a new bounded task if more work is needed. `correct` and `adjudicate` remain explicit roles; they are never entered automatically.

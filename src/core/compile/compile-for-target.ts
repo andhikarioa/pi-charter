@@ -3,30 +3,28 @@
  *
  * Before this module, a consumer had to compose the canonical pipeline from memory:
  *
- *   resolveExecutionContract → bindExecutionTarget → compileBoundRoleEnvelope → renderRoleEnvelope
+ *   resolveExecutionContract → bindExecutionTarget → compileRoleEnvelope → renderRoleEnvelope
  *   → bindParentTarget/bindSubagentsTarget → createResolutionReceipt
  *
- * Smoke #1 proved that too easy to get wrong: the produced `SubagentsHandoff` is binding-SHAPED but
- * carries no canonical binding provenance, so handing it to `compileRoleEnvelope` compiles nothing —
- * and composing the contract with a second, caller-authored binding silently produces governance
- * truth nobody proved. This facade owns the order, so the mistake is not reachable through it:
+ * Earlier public phase composition made it too easy for callers to mix intermediate artifacts or
+ * reconstruct governance truth outside the canonical order. The facade owns that order, while the
+ * individual phases remain internal implementation details:
  *
  *   TaskContract + binders + model environment evidence + capability evidence
  *            ↓ resolveExecutionContract          (Phase 2)
  *   ExecutionContract
  *            ↓ bindExecutionTarget                (Phase 3)
- *   canonical TargetBinding  ← the ONLY value RoleEnvelope compilation accepts
- *            ↓ compileBoundRoleEnvelope           (Phase 4 — canonical binding in, envelope out)
+ *   TargetBinding            ← one internal bound truth value
+ *            ↓ compileRoleEnvelope           (Phase 4 — bound truth in, instruction artifact out)
  *   RoleEnvelope → renderRoleEnvelope → instruction text
  *            ↓
  *   target handoff (separate artifact, never fed into envelope compilation)
  *            ↓
  *   ResolutionReceipt (identity of what was compiled, with the real compiler build identity)
  *
- * The facade composes; it decides nothing. Every rule it invokes is a rule that already existed, and
- * no rule is restated here: an unusable input fails inside the step that owns it. The low-level
- * functions stay public for advanced and internal use, but the blessed entry is this one, and it is
- * the only place the compiler identity is supplied — a normal caller never invents one.
+ * The facade composes; it decides nothing. Every rule it invokes is owned by the internal phase that
+ * establishes it. Low-level phases are implementation details, not separate SDK contracts. This is
+ * also the only place the compiler identity is supplied — a normal caller never invents one.
  */
 
 import type { AssertionBinder } from '../acceptance/assertion-binding.ts';
@@ -37,7 +35,7 @@ import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import type { TaskContract } from '../contracts/task-contract.ts';
 import type { CorrectionAuthorityBinder } from '../correction/correction-authority.ts';
-import { compileBoundRoleEnvelope, renderRoleEnvelope, type RoleEnvelope } from '../envelopes/role-envelope.ts';
+import { compileRoleEnvelope, renderRoleEnvelope, type RoleEnvelope } from '../envelopes/role-envelope.ts';
 import { bindExecutionTarget, type TargetBinding } from '../enforcement/target-binding.ts';
 import { createResolutionReceipt, type ResolutionReceipt } from '../receipt/resolution-receipt.ts';
 import { resolveExecutionContract } from '../resolver/resolve.ts';
@@ -83,7 +81,7 @@ export interface CompileForTargetInput {
 export interface CompiledGovernance {
   /** Phase 2: the resolved contract. */
   execution_contract: ExecutionContract;
-  /** Phase 3: the canonically bound target binding, with enforcement truth and its evidence. */
+  /** Phase 3: the one target binding, with enforcement truth and its evidence. */
   target_binding: TargetBinding;
   /** Phase 4: the compiled instruction artifact. */
   role_envelope: RoleEnvelope;
@@ -176,8 +174,8 @@ export function compileForTarget(input: unknown): CompileForTargetResult {
   });
   if (!resolved.ok) return { ok: false, errors: resolved.errors };
 
-  // Phase 3: bind. This call is the ONLY mint of canonical binding provenance in the process, and the
-  // value it returns is the one the envelope compiler will be handed below.
+  // Phase 3: bind exactly once. The value returned here is the same bound truth projected into the
+  // instruction, target handoff, and receipt below.
   const bindingInput = {
     execution_contract: resolved.contract,
     ...(input.capability_attestation !== undefined
@@ -190,59 +188,33 @@ export function compileForTarget(input: unknown): CompileForTargetResult {
   const bound = bindExecutionTarget(bindingInput);
   if (!bound.ok) return { ok: false, errors: bound.errors };
 
-  // Phase 4: compile the instruction artifact from the canonical binding — never from a handoff, a
+  // Phase 4: compile the instruction artifact from the bound truth — never from a handoff, a
   // copy, or anything a caller assembled.
-  const compiledEnvelope = compileBoundRoleEnvelope(bound.binding);
-  if (!compiledEnvelope.ok) return { ok: false, errors: compiledEnvelope.errors };
+  const roleEnvelope = compileRoleEnvelope(bound.binding);
 
   // The handoff is produced separately, from the same inputs, through the same target adapter. It is
   // a translation of bound truth for the substrate, and it is never an envelope input.
   const handoff =
     resolved.contract.execution_target === 'parent'
-      ? bindParentTarget(bindingInput)
-      : bindSubagentsTarget(bindingInput);
+      ? bindParentTarget(bound.binding)
+      : bindSubagentsTarget(bound.binding);
   if (!handoff.ok) return { ok: false, errors: handoff.errors };
 
-  // Phase 5: evidence of what was compiled. The receipt recomputes the pipeline from the same inputs
-  // and refuses if the canonical artifacts are not exactly what those inputs resolve to.
+  // Phase 5: compact evidence projection of the canonical truth already established above.
   const receipt = createResolutionReceipt({
-    task_contract: input.task_contract,
-    authority_binder: input.authority_binder as AuthorityBinder,
-    ...(input.assertion_binder !== undefined ? { assertion_binder: input.assertion_binder as AssertionBinder } : {}),
-    ...(input.correction_binder !== undefined
-      ? { correction_binder: input.correction_binder as CorrectionAuthorityBinder }
-      : {}),
-    model_profile: input.model_profile as ModelProfile,
-    ...(input.available !== undefined ? { available: input.available as readonly string[] } : {}),
-    ...(input.model_availability_attestation !== undefined
-      ? { model_availability_attestation: input.model_availability_attestation }
-      : {}),
-    ...(input.model_availability_attestation_verifier !== undefined
-      ? {
-          model_availability_attestation_verifier:
-            input.model_availability_attestation_verifier as AttestationVerifier,
-        }
-      : {}),
-    ...(input.capability_attestation !== undefined
-      ? { capability_attestation: input.capability_attestation }
-      : { capability_claim: input.capability_claim }),
-    ...(input.capability_attestation_verifier !== undefined
-      ? { capability_attestation_verifier: input.capability_attestation_verifier as AttestationVerifier }
-      : {}),
     compiler_identity: compilerIdentity.compiler_identity,
     target_binding: bound.binding,
   });
-  if (!receipt.ok) return { ok: false, errors: receipt.errors };
 
   return {
     ok: true,
     compiled: {
       execution_contract: resolved.contract,
       target_binding: bound.binding,
-      role_envelope: compiledEnvelope.envelope,
-      rendered_role_envelope: renderRoleEnvelope(compiledEnvelope.envelope),
+      role_envelope: roleEnvelope,
+      rendered_role_envelope: renderRoleEnvelope(roleEnvelope),
       target_handoff: handoff.handoff,
-      resolution_receipt: receipt.receipt,
+      resolution_receipt: receipt,
     },
   };
 }

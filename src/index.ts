@@ -1,110 +1,114 @@
 /**
- * pi-charter v0.1 — Phase 1 + Phase 2 + Phase 3 + Phase 4 + Phase 5 surface.
- * TaskContract schema, fail-closed validation, deterministic resolution to an ExecutionContract,
- * truthful execution-target capability binding with thin parent/subagents adapters, deterministic
- * role-envelope compilation for the five canonical roles, one pure bounded next-action policy, and
- * an optional evidence-only resolution receipt.
- * v0.1.1 Wave 1 adds resolved evidence provenance: authority binding identity and content digest,
- * verifier-bound assertions, admitted correction targets, attested-versus-claimed environment
- * evidence, a canonical tool policy, and a required compiler identity on the receipt.
- * Charter resolves governance, compiles instructions, and decides a bounded next action; the
- * execution substrate owns execution, retries, and lifecycle.
+ * pi-charter — small public surface for the governance compiler.
+ *
+ * Public callers state bounded task intent and compile it. Internal validation, resolver, target
+ * binding, instruction, receipt, attestation-boundary, and host-authority phases are deliberately not
+ * separate SDK contracts.
  */
-export * from './core/contracts/errors.ts';
-export * from './core/contracts/task-contract.ts';
-export * from './core/contracts/execution-contract.ts';
-export * from './core/provenance/evidence.ts';
-// Attestation is the one explicit allow-list on this surface (W1_ATTESTATION_VERIFIER_FORGEABILITY):
-// the package admits candidate validation, evidence resolution, and the boundary TYPE, and never the
-// trusted-boundary minter. A caller therefore holds no way to occupy the trusted-attestation position
-// through the package surface — only a candidate path that can never be attested. The minter lives in
-// core/attestation/trusted-boundary.ts and core/attestation/attestation.ts and is reached only by the
-// blessed adapter/fixture seam.
+
+export { ERROR_CODES } from './core/contracts/errors.ts';
+export type { CharterError, CharterErrorCode } from './core/contracts/errors.ts';
+
 export {
-  ATTESTATION_SOURCE_KINDS,
-  ENVIRONMENT_EVIDENCE_CLASSES,
-  checkAttestationCandidate,
-  checkEnvironmentEvidence,
-  claimedEvidence,
-  resolveAttestationEvidence,
-} from './core/attestation/attestation.ts';
+  ROLES,
+  TASK_CLASSES,
+  RISKS,
+  VERIFICATION_LEVELS,
+  EXECUTION_TARGETS,
+  STRUCTURED_ACTIONS,
+  ENFORCEMENT_CONSTRAINTS,
+  ENFORCEMENT_REQUIREMENTS,
+} from './core/contracts/task-contract.ts';
 export type {
-  AttestationCandidate,
-  AttestationSourceKind,
-  AttestationVerifier,
-  EnvironmentEvidence,
-  EnvironmentEvidenceClass,
-} from './core/attestation/attestation.ts';
-export * from './core/authority/binder.ts';
-export * from './core/acceptance/assertion-binding.ts';
-export * from './core/correction/correction-authority.ts';
-export * from './core/validation/validate.ts';
-export * from './core/routing/model-routing.ts';
-export * from './core/jurisdiction/jurisdiction.ts';
-export * from './core/resolver/resolve.ts';
-export * from './core/enforcement/target-binding.ts';
-export * from './core/envelopes/role-envelope.ts';
-export * from './adapters/parent/parent-adapter.ts';
-export * from './adapters/subagents/subagents-adapter.ts';
-export * from './core/escalation/escalation-policy.ts';
-export * from './core/receipt/resolution-receipt.ts';
-// v0.1.1 Wave 2 surface: post-execution conformance evidence, the one blessed composition facade,
-// and the minimum Pi-native bridge.
-//
-// Execution evidence is the second place trust enters Charter, and it is bounded the same way as the
-// first: an attestation is EVIDENCE only when a substrate/adaptor issuance boundary minted it, and
-// that boundary is recognised by process-local identity in a store the package never exports
-// (`core/execution/trusted-execution-boundary.ts`). This surface therefore admits the pure verifier
-// and the evidence vocabulary, and never `createExecutionAttestationIssuer` — a caller holds no way
-// to author trusted execution evidence through the package. A caller-authored object with the right
-// fields, a copy, a clone, and a JSON roundtrip all stay claims, which is exactly what
-// `verifyExecutionAttestation` reports as `UNTRUSTED_EXECUTION_EVIDENCE`.
-export {
-  ACCEPTANCE_EVIDENCE_STATUSES,
-  EXECUTION_ATTESTATION_VERSION,
-  EXECUTION_DEVIATION_CODES,
-  EXECUTION_VERDICTS,
-  verifyExecutionAttestation,
-} from './core/execution/execution-attestation.ts';
+  Role,
+  TaskClass,
+  Risk,
+  VerificationLevel,
+  ExecutionTargetName,
+  Permissions,
+  Authority,
+  Scope,
+  AcceptanceReview,
+  Acceptance,
+  TaskDescriptor,
+  StructuredAction,
+  EnforcementConstraint,
+  EnforcementRequirement,
+  EnforcementRequirements,
+  TaskRequirements,
+  ExecutionPolicy,
+  TaskContract,
+} from './core/contracts/task-contract.ts';
+
+export type { ExecutionContract } from './core/contracts/execution-contract.ts';
+export type { EvidenceBinding, EvidenceBinder, EvidenceProvenance } from './core/provenance/evidence.ts';
+export { createEvidenceBinder } from './core/provenance/evidence.ts';
+export type { AssertionBinder, AssertionBinding } from './core/acceptance/assertion-binding.ts';
+export type { CorrectionAuthorityBinder, ResolvedCorrectionTarget } from './core/correction/correction-authority.ts';
+
+export { createAuthorityBinder } from './core/authority/binder.ts';
+export type { AuthorityBinder } from './core/authority/binder.ts';
+
+export { MODEL_TIERS } from './core/routing/model-routing.ts';
+export type { ModelTier, ModelProfile, ModelSelection, TierModels } from './core/routing/model-routing.ts';
+
+export { ENFORCEMENT_TRUTHS } from './core/enforcement/target-binding.ts';
 export type {
-  AcceptanceEvidenceStatus,
-  AcceptanceVerification,
-  AssertionExecutionEvidence,
-  ExecutionAttestation,
-  ExecutionDeviation,
-  ExecutionDeviationCode,
-  ExecutionSubstrateIdentity,
-  ExecutionVerificationInput,
-  ExecutionVerificationResult,
-  ExecutionVerdict,
-} from './core/execution/execution-attestation.ts';
-export * from './core/compile/compile-for-target.ts';
-export * from './bridge/pi-bridge.ts';
-// v0.1.2 Wave 1 surface: what a normal operator states, how bounded delegation is compiled, and how
-// those results are stated truthfully.
-//
-//   operator-request   simple intent → the canonical strict TaskContract + an authority binder
-//   compile-delegation bounded delegation authority for target=subagents, with runtime attestation
-//                      explicitly NOT claimed and no execution handle minted
-//   operator-surface   declared-versus-attested rendering, and actionable refusals
-//
-// None of these three is a trust position: the delegation path observes no runtime, mints no
-// admission, and holds no capability evidence beyond an empty observation set, so it can ground no
-// `ENFORCED` and no attested inventory. The rendering module reads already-established values.
-export * from './operator/operator-request.ts';
-export * from './operator/operator-surface.ts';
-export * from './delegation/compile-delegation.ts';
-// Final correction (F1/F3): the one supported adapter-facing integration contract. An adapter reports
-// observations; whether those observations are CANDIDATES or trusted evidence is decided by the host
-// authorization capability, and this surface admits exactly the ordinary (untrusted) integration plus
-// the observation vocabulary. `createHostAuthorizedAdapterIntegration`, `HOST_ADAPTER_AUTHORITY`, and
-// `isHostAdapterAuthority` are deliberately absent: the runtime integration the package itself wires
-// holds the host capability, and no caller can obtain one by importing the package. The raw
-// execution-evidence issuer, the attestation verifier factory, and the process-local boundary stores
-// stay absent for the same reason.
+  EnforcementTruth,
+  EnforcementTruthTable,
+  ExecutionTargetCapabilities,
+  TargetBinding,
+} from './core/enforcement/target-binding.ts';
+
+export { compileForTarget } from './core/compile/compile-for-target.ts';
+export type {
+  CompileForTargetInput,
+  CompiledGovernance,
+  CompileForTargetResult,
+} from './core/compile/compile-for-target.ts';
+
 export {
-  createAdapterIntegration,
-} from './integration/adapter-integration.ts';
+  OPERATOR_FRESH_VALUES,
+  OPERATOR_DEFAULT_TASK_CLASS,
+  OPERATOR_DEFAULT_RISK,
+  OPERATOR_DEFAULT_VERIFICATION_LEVEL,
+  normalizeOperatorRequest,
+} from './operator/operator-request.ts';
+export type {
+  OperatorFreshValue,
+  NormalizedOperatorRequest,
+  OperatorRequestResult,
+  OperatorRequestEnv,
+} from './operator/operator-request.ts';
+
+export {
+  describeAcceptance,
+  renderAcceptanceLines,
+  renderParentCompile,
+  renderDelegationCompile,
+  REFUSAL_GUIDANCE,
+  renderRefusal,
+} from './operator/operator-surface.ts';
+export type { AcceptanceSurfaceTruth, ParentCompileSurface } from './operator/operator-surface.ts';
+
+export {
+  DELEGATION_FRESH_CONTEXT,
+  DELEGATION_CAPABILITY_SOURCE,
+  DELEGATION_HANDOFF_STATUS,
+  DELEGATION_EXECUTION_PROOF,
+  compileDelegation,
+} from './delegation/compile-delegation.ts';
+export type {
+  DelegationFreshContext,
+  DelegationCompileInput,
+  DelegationHandoff,
+  DelegationTruth,
+  DelegationCompileSuccess,
+  DelegationCompileResult,
+} from './delegation/compile-delegation.ts';
+
+/** Ordinary external adapter integration. Host trust authority remains internal to the shipped Pi seam. */
+export { createAdapterIntegration } from './integration/adapter-integration.ts';
 export type {
   AdapterCapabilityObservation,
   AdapterCapabilityObservationResult,
@@ -112,10 +116,6 @@ export type {
   AdapterCompileResult,
   AdapterCompileSuccess,
   AdapterEnvironmentObservation,
-  AdapterExecutionObservationInput,
-  AdapterExecutionObservationResult,
-  AdapterExecutionVerificationInput,
-  AdapterExecutionVerificationResult,
   AdapterIntegration,
   AdapterIntegrationOptions,
   AdapterObservationResult,

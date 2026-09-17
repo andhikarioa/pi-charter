@@ -1,6 +1,5 @@
 import { isAbsolute, posix } from 'node:path';
 
-import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError, CharterErrorCode } from '../contracts/errors.ts';
 import {
   ACTION_REQUIRES_PERMISSION,
@@ -12,19 +11,10 @@ import {
   STRUCTURED_ACTIONS,
   TASK_CLASSES,
   VERIFICATION_LEVELS,
-  type Limits,
   type Scope,
   type TaskContract,
   type TaskRequirements,
 } from '../contracts/task-contract.ts';
-
-export interface ValidationEnv {
-  /**
-   * Phase 1 authority-binding interface (spec §13).
-   * Omitting it never skips the check: unbound authority fails closed.
-   */
-  authorityBinder?: AuthorityBinder;
-}
 
 export type ValidationResult =
   | { ok: true; contract: TaskContract }
@@ -42,7 +32,6 @@ const TASK_CONTRACT_KEYS = [
   'permissions',
   'acceptance',
   'verification',
-  'limits',
   'actions',
   'non_goals',
   'requirements',
@@ -56,7 +45,6 @@ const PERMISSION_KEYS = ['code_write', 'research', 'external_write', 'release'] 
 const ACCEPTANCE_KEYS = ['commands', 'assertions', 'review'] as const;
 const ACCEPTANCE_REVIEW_KEYS = ['required', 'independence', 'executor'] as const;
 const VERIFICATION_KEYS = ['level'] as const;
-const LIMITS_KEYS = ['correction_rounds', 'semantic_escalations'] as const;
 const REQUIREMENTS_KEYS = ['enforcement'] as const;
 
 function checkUnknownKeys(
@@ -76,9 +64,10 @@ function checkUnknownKeys(
 /**
  * Validate a candidate TaskContract, fail-closed (spec §41 Phase 1).
  * Deterministic: the same input and env always produce the same ordered result.
- * Errors are reported in fixed phase order: structure → role/permission → authority → scope → acceptance → actions.
+ * Errors are reported in fixed phase order: structure → role/permission → scope → acceptance → actions.
+ * Authority references are structurally validated here and bound exactly once during resolution.
  */
-export function validateTaskContract(input: unknown, env: ValidationEnv = {}): ValidationResult {
+export function validateTaskContract(input: unknown): ValidationResult {
   const errors: CharterError[] = [];
   const err = (code: CharterErrorCode, path: string, message: string): void => {
     errors.push({ code, message, path });
@@ -207,19 +196,6 @@ export function validateTaskContract(input: unknown, env: ValidationEnv = {}): V
     }
   }
 
-  if (input.limits !== undefined) {
-    if (!isRecord(input.limits)) {
-      err('INVALID_TASK_CONTRACT', 'limits', 'limits must be an object');
-    } else {
-      checkUnknownKeys(input.limits, LIMITS_KEYS, 'limits', err);
-      for (const field of ['correction_rounds', 'semantic_escalations'] as const) {
-        const value = input.limits[field];
-        if (value !== undefined && !(Number.isInteger(value) && (value as number) >= 0)) {
-          err('INVALID_TASK_CONTRACT', `limits.${field}`, `limits.${field} must be a non-negative integer`);
-        }
-      }
-    }
-  }
 
   if (input.actions !== undefined && !(Array.isArray(input.actions) && input.actions.every((a) => isOneOf(a, STRUCTURED_ACTIONS)))) {
     err('INVALID_TASK_CONTRACT', 'actions', `actions must be a list of ${STRUCTURED_ACTIONS.join('|')}`);
@@ -311,23 +287,6 @@ export function validateTaskContract(input: unknown, env: ValidationEnv = {}): V
   }
   if (c.task.class === 'T4' && (c.task.evidence?.length ?? 0) === 0) {
     err('INVALID_TASK_CONTRACT', 'task.evidence', 'task.class=T4 MUST be evidence-backed');
-  }
-
-  // ── Authority binding (spec §13) ───────────────────────────────────────────
-  const binder = env.authorityBinder;
-  for (const reference of c.authority.sources) {
-    if (!binder) {
-      err('AUTHORITY_UNRESOLVED', 'authority.sources', `no authority binder supplied for '${reference}'`);
-      continue;
-    }
-    const bindings = binder.bind(reference);
-    if (bindings.length !== 1) {
-      err(
-        'AUTHORITY_UNRESOLVED',
-        'authority.sources',
-        `authority '${reference}' resolved to ${bindings.length} sources; exactly one is required`,
-      );
-    }
   }
 
   // ── Scope (spec §14) ───────────────────────────────────────────────────────
@@ -478,7 +437,6 @@ function normalize(c: TaskContract): TaskContract {
       ...(c.acceptance.review ? { review: { ...c.acceptance.review } } : {}),
     },
     verification: { level: c.verification.level },
-    ...(c.limits ? { limits: { ...c.limits } as Limits } : {}),
     ...(c.actions ? { actions: [...c.actions] } : {}),
     ...(c.non_goals ? { non_goals: [...c.non_goals] } : {}),
     ...(c.requirements ? { requirements: normalizeRequirements(c.requirements) } : {}),

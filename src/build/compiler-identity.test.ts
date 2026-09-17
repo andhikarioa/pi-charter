@@ -39,6 +39,8 @@ test('BUILD1 — the recorded identity describes the artifact set that was actua
   // The recorded identity is derived from the compiled artifact set, which is non-empty and real.
   assert.ok(listCompiledArtifacts(DIST).length > 20, 'the compiled artifact set must be present');
   assert.ok(listCompiledArtifacts(DIST).every((path) => path.endsWith('.js') || path.endsWith('.d.ts')));
+  assert.equal(listCompiledArtifacts(DIST).includes('core/validation/fixtures.js'), false);
+  assert.equal(listCompiledArtifacts(DIST).includes('core/validation/fixtures.d.ts'), false);
 });
 
 test('BUILD2 — a material compiled-artifact change changes the identity', () => {

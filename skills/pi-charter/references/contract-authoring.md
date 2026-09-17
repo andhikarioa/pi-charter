@@ -46,8 +46,6 @@ finding, or `execution_target`. Escalate per the ladder in `SKILL.md` only on a 
 | `acceptance.review.independence` | `none` / `independent` | `same_session` + `independent` is a contradiction. |
 | `acceptance.review.executor` | `same_session` / `fresh_session` | Must be truthful about where review happens. |
 | `verification.level` | `V0`–`V5` | V0 inspection/reasoning · V1 focused tests · V2 local gates · V3 bounded adversarial review · V4 staging/live integration · V5 release/production. |
-| `limits.correction_rounds` | non-negative integer | Bound for `correct` rounds. Undeclared ⇒ not a bound. |
-| `limits.semantic_escalations` | non-negative integer | Bound for bounded adjudication. |
 | `actions` | `tag` / `push` / `publish` / `deploy` | Each requires its matching permission; otherwise contradictory. |
 | `non_goals` | string list | Cheap, high-value: state what this work must not become. |
 | `requirements.enforcement` | see below | Declares what the target must **hard-enforce**. |
@@ -124,16 +122,11 @@ acceptance:
 verification:
   level: V2
 
-limits:
-  correction_rounds: 1
-  semantic_escalations: 1
 
 non_goals:
   - architecture redesign
   - unrelated refactor
 ```
 
-Notes: this admits a single bounded implementation on the parent target, offers one bounded
-correction round, and declares no hard-enforcement requirement — so it can never claim enforcement
-it did not ask for. Add `requirements.enforcement` only when instruction-level control is genuinely
+Notes: this admits a single bounded implementation on the parent target and declares no hard-enforcement requirement — so it can never claim enforcement it did not ask for. Add `requirements.enforcement` only when instruction-level control is genuinely
 insufficient, and expect a refusal if the selected target cannot supply it.

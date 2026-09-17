@@ -21,12 +21,9 @@
  *
  * What it deliberately does NOT do, in this order of importance:
  *
- *   It mints no execution admission. `compileForTarget` compiles artifacts; the ADMISSION HANDLE is
- *   what makes an artifact set eligible for trusted execution evidence, and only the runtime that
- *   executes it may hold that. Delegated work runs in a child this process cannot see, so a handle
- *   here would let the PARENT's own tool executions be verified as the child's run — a false claim
- *   dressed as evidence. There is no handle, and `observeExecution`/`verifyExecution` are not reached
- *   from this path at all.
+ *   It owns no child execution lifecycle. Delegated work runs in a child this process cannot see, so
+ *   this path stops at bounded handoff truth and never turns parent activity into a child-execution
+ *   claim.
  *
  *   It claims no child capability. The capability channel it supplies is a candidate carrying an
  *   EMPTY observation set: nothing was observed about the subagents target, so nothing is attested and
@@ -184,8 +181,8 @@ export function compileDelegation(input: unknown): DelegationCompileResult {
     typeof freshContext === 'string' ? (freshContext as DelegationFreshContext) : 'NOT_REQUIRED';
 
   // The one target this path compiles. A contract selecting another target is refused rather than
-  // re-targeted: the parent target is compiled by the session that executes it, which is exactly the
-  // path that holds the observation and the admission this one deliberately does not.
+  // re-targeted: the parent target is compiled by the active session; this path owns only bounded
+  // child-handoff truth and no child execution lifecycle.
   const declaredTarget = isRecord(input.task_contract) ? input.task_contract.execution_target : undefined;
   if (declaredTarget !== 'subagents') {
     return {

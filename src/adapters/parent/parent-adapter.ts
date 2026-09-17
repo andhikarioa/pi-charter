@@ -10,11 +10,7 @@
  */
 
 import type { CharterError } from '../../core/contracts/errors.ts';
-import {
-  bindExecutionTarget,
-  type TargetBinding,
-  type TargetBindingInput,
-} from '../../core/enforcement/target-binding.ts';
+import type { TargetBinding } from '../../core/enforcement/target-binding.ts';
 
 /** Target-bound parent handoff. A binding, not a session: nothing here can start or track work. */
 export type ParentHandoff = TargetBinding & { target: 'parent' };
@@ -28,20 +24,18 @@ export type ParentBindingResult =
  * adapter never substitutes itself for the target the contract selected, and the capability
  * snapshot must already describe `parent` (the core enforces that identity).
  */
-export function bindParentTarget(input: TargetBindingInput): ParentBindingResult {
-  const bound = bindExecutionTarget(input);
-  if (!bound.ok) return bound;
-  if (bound.binding.target !== 'parent') {
+export function bindParentTarget(binding: TargetBinding): ParentBindingResult {
+  if (binding.target !== 'parent') {
     return {
       ok: false,
       errors: [
         {
           code: 'CONTRACT_CONTRADICTION',
           path: 'execution_target',
-          message: `the parent adapter cannot serve execution_target=${bound.binding.target}; no target is substituted`,
+          message: `the parent adapter cannot serve execution_target=${binding.target}; no target is substituted`,
         },
       ],
     };
   }
-  return { ok: true, handoff: { ...bound.binding, target: 'parent' } };
+  return { ok: true, handoff: binding as ParentHandoff };
 }

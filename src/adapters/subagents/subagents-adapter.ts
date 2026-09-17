@@ -15,10 +15,9 @@ import type { CharterError } from '../../core/contracts/errors.ts';
 import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { Permissions, Role, Scope } from '../../core/contracts/task-contract.ts';
 import {
-  bindExecutionTarget,
   requiresFreshSession,
   type EnforcementTruthTable,
-  type TargetBindingInput,
+  type TargetBinding,
 } from '../../core/enforcement/target-binding.ts';
 import type { EvidenceProvenance } from '../../core/provenance/evidence.ts';
 import type { ModelTier } from '../../core/routing/model-routing.ts';
@@ -81,22 +80,20 @@ export type SubagentsBindingResult =
  * Bind a contract to the `subagents` target and translate the bound truth into handoff parameters.
  * A contract selecting another target is refused rather than silently re-targeted.
  */
-export function bindSubagentsTarget(input: TargetBindingInput): SubagentsBindingResult {
-  const bound = bindExecutionTarget(input);
-  if (!bound.ok) return bound;
-  if (bound.binding.target !== 'subagents') {
+export function bindSubagentsTarget(binding: TargetBinding): SubagentsBindingResult {
+  if (binding.target !== 'subagents') {
     return {
       ok: false,
       errors: [
         {
           code: 'CONTRACT_CONTRADICTION',
           path: 'execution_target',
-          message: `the subagents adapter cannot serve execution_target=${bound.binding.target}; no target is substituted`,
+          message: `the subagents adapter cannot serve execution_target=${binding.target}; no target is substituted`,
         },
       ],
     };
   }
-  const contract = bound.binding.execution_contract;
+  const contract = binding.execution_contract;
   return {
     ok: true,
     handoff: {
@@ -117,8 +114,8 @@ export function bindSubagentsTarget(input: TargetBindingInput): SubagentsBinding
         provenance: structuredClone(contract.authority.provenance),
       },
       fresh_session_required: requiresFreshSession(contract.acceptance?.review),
-      enforcement: bound.binding.enforcement,
-      capability_evidence: bound.binding.capability_evidence,
+      enforcement: binding.enforcement,
+      capability_evidence: binding.capability_evidence,
       execution_contract: contract,
     },
   };

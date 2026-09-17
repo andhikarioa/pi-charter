@@ -57,10 +57,6 @@ export interface Acceptance {
   review?: AcceptanceReview;
 }
 
-export interface Limits {
-  correction_rounds?: number;
-  semantic_escalations?: number;
-}
 
 export interface TaskDescriptor {
   id: string;
@@ -143,7 +139,6 @@ export interface TaskContract {
   permissions: Permissions;
   acceptance: Acceptance;
   verification: { level: VerificationLevel };
-  limits?: Limits;
   actions?: StructuredAction[];
   non_goals?: string[];
   requirements?: TaskRequirements;

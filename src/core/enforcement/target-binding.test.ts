@@ -598,7 +598,7 @@ test('requirements.enforcement — accepted, preserved, and carried through reso
     ...base,
     requirements: { enforcement: { allowed_tools: 'required', allowed_files: 'required' } },
   };
-  const validated = validateTaskContract(withRequirements, { authorityBinder: BINDER });
+  const validated = validateTaskContract(withRequirements);
   assert.equal(validated.ok, true, JSON.stringify(validated.ok ? [] : validated.errors));
   if (!validated.ok) return;
   // The field survives normalization: a validated contract never silently drops a requirement.
@@ -611,7 +611,7 @@ test('requirements.enforcement — accepted, preserved, and carried through reso
   assert.deepEqual(carried.requirements, validated.contract.requirements);
   assert.deepEqual({ ...carried, requirements: undefined }, { ...resolved(base), requirements: undefined });
   // A contract without requirements keeps exactly its previous shape at both ends.
-  const plain = validateTaskContract(base, { authorityBinder: BINDER });
+  const plain = validateTaskContract(base);
   assert.equal(plain.ok, true);
   if (!plain.ok) return;
   assert.equal('requirements' in plain.contract, false);
@@ -622,7 +622,7 @@ test('requirements.enforcement — accepted, preserved, and carried through reso
 test('requirements.enforcement — an empty requirements object admits nothing', () => {
   const base = fixtureContract('critical correction');
   for (const requirements of [{}, { enforcement: {} }]) {
-    const result = validateTaskContract({ ...base, requirements }, { authorityBinder: BINDER });
+    const result = validateTaskContract({ ...base, requirements });
     assert.equal(result.ok, true, JSON.stringify(requirements));
     if (!result.ok) return;
     assert.deepEqual(result.contract.requirements, requirements);
@@ -649,7 +649,7 @@ test('requirements.enforcement — unknown names, unknown values, and unknown fi
     ['requirements is not an object', 'required', 'requirements'],
   ];
   for (const [label, requirements, path] of cases) {
-    const result = validateTaskContract({ ...base, requirements }, { authorityBinder: BINDER });
+    const result = validateTaskContract({ ...base, requirements });
     assert.equal(result.ok, false, label);
     if (result.ok) return;
     assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['INVALID_TASK_CONTRACT'], label);
@@ -664,7 +664,7 @@ test('requirements.enforcement — the declaration is what the binding honours',
     ...fixtureContract('critical correction'),
     requirements: { enforcement: { allowed_files: 'required' } },
   };
-  const declared = validateTaskContract(unsatisfiable, { authorityBinder: BINDER });
+  const declared = validateTaskContract(unsatisfiable);
   assert.equal(declared.ok, true);
   if (!declared.ok) return;
   const parentContract = resolved(declared.contract);
@@ -677,7 +677,7 @@ test('requirements.enforcement — the declaration is what the binding honours',
     // The declared tool policy is the ceiling: the requirement without it refuses (T3).
     execution_policy: { allowed_tools: ['read', 'edit'] },
   };
-  const accepted = validateTaskContract(satisfiable, { authorityBinder: BINDER });
+  const accepted = validateTaskContract(satisfiable);
   assert.equal(accepted.ok, true);
   if (!accepted.ok) return;
   const subagentsContract = resolved(accepted.contract);

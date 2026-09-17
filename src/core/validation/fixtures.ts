@@ -68,7 +68,6 @@ export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
         review: { required: true, independence: 'none', executor: 'same_session' },
       },
       verification: { level: 'V3' },
-      limits: { correction_rounds: 2, semantic_escalations: 1 },
       non_goals: ['architecture redesign', 'unrelated refactor'],
     },
   },
@@ -100,7 +99,6 @@ export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
       permissions: { code_write: false, research: false, external_write: false, release: false },
       acceptance: { assertions: ['work-units-bounded'] },
       verification: { level: 'V1' },
-      limits: { semantic_escalations: 1 },
     },
   },
   {
@@ -119,7 +117,6 @@ export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
         review: { required: true, independence: 'independent', executor: 'fresh_session' },
       },
       verification: { level: 'V2' },
-      limits: { correction_rounds: 1 },
     },
   },
   {
@@ -150,7 +147,6 @@ export const POSITIVE_CONTRACTS: { name: string; contract: TaskContract }[] = [
       permissions: { code_write: false, research: false, external_write: false, release: false },
       acceptance: { assertions: ['decision-frozen'], review: { required: false, independence: 'none' } },
       verification: { level: 'V0' },
-      limits: { semantic_escalations: 1 },
     },
   },
   {
@@ -590,23 +586,6 @@ export const NEGATIVE_CONTRACTS: {
       acceptance: { assertions: ['feature-implemented'] },
       verification: { level: 'V1' },
       actions: ['refactor-everything'],
-    },
-  },
-  {
-    name: 'structural: negative limits',
-    expected: ['INVALID_TASK_CONTRACT'],
-    contract: {
-      version: 'charter/v0.1',
-      task: { id: 'negative-limits', class: 'T1', risk: 'low' },
-      role: 'implement',
-      execution_target: 'parent',
-      root: ROOT,
-      authority: { sources: ['canonical-master'] },
-      scope: { files: ['src/feature.ts'] },
-      permissions: { code_write: true, research: false, external_write: false, release: false },
-      acceptance: { assertions: ['feature-implemented'] },
-      verification: { level: 'V1' },
-      limits: { correction_rounds: -1, semantic_escalations: 1.5 },
     },
   },
   {

@@ -1,6 +1,6 @@
 ---
 name: pi-charter
-description: Compile explicit bounded authority, model routing, execution-target truth, role instructions, and fail-closed next actions for non-trivial Pi work. Use when work needs explicit scope, authority, permissions, verification, review/correction boundaries, adjudication, bounded escalation limits, parent/subagents execution governance, or delegated child work. State the intent and call charter_compile first — no source archaeology, no hand-authored contract; then read the result's four truths (authority, handoff, runtime attestation, execution proof) truthfully.
+description: Compile explicit bounded authority, model routing, execution-target capability truth, role instructions, and receipts for non-trivial Pi work. Use when work needs explicit scope, authority, permissions, verification gates, review/correction boundaries, adjudication, parent/subagents governance, or delegated child work. State the intent and call charter_compile first — no source archaeology and no hand-authored contract for normal work.
 ---
 
 # pi-charter — operator guide
@@ -14,9 +14,8 @@ TaskContract
      ↓  resolve → ExecutionContract (model, jurisdiction, narrowed scope/permissions)
      ↓  bind to execution target → real enforcement truth
      ↓  compile → RoleEnvelope (what this role may and must never do)
+     ↓  emit bounded compile result / handoff / receipt
      ↓  executor acts — outside Charter
-     ↓  explicit outcome + evidence
-     ↓  Charter may decide one bounded next action
 ```
 
 **Charter decides, constrains, and compiles. The execution substrate executes.**
@@ -66,78 +65,45 @@ A reference may be opened only **after an explicit blocker** — the tool output
 or contradicts what you were told — and then at most one, escalated only by the ladder below.
 Convenience is not a blocker. Curiosity is not a blocker.
 
-### Read the result as four separate truths
+### Read the result as compile-time governance truth
+
+`charter_compile` establishes bounded authority/scope/model/target-capability truth. It does not prove that later work executed or passed.
+
+For `execution_target=parent`, the result is a bounded compile for the active Pi session. Pi owns the execution after that compile.
+
+For `execution_target=subagents`, the result is `HANDOFF_READY`: bounded delegation parameters exist, but this process did not observe the child runtime and makes no child execution claim.
 
 ```text
-Authority        BOUND | <refusal>        the bounded authority was compiled
-Handoff          READY | <refusal>        bounded delegation parameters exist
-Runtime attested YES | NO               did THIS process observe the runtime that runs the work?
-Execution proof  AVAILABLE | UNAVAILABLE did trusted execution evidence exist at all?
+parent     authority BOUND → bounded compile READY → Pi executes
+subagents  authority BOUND → HANDOFF_READY → substrate executes
 ```
 
-For every `execution_target=parent` compile: authority is `BOUND`, the artifact set is admitted, and
-execution proof arrives only when this session actually runs the work and reports the observation
-through `charter_verify_execution`. Admission is not execution.
-
-For every `execution_target=subagents` compile: authority is `BOUND`, the handoff is `READY`, runtime
-attestation is `NO`, and execution proof is `UNAVAILABLE` — this process does not observe the child.
-That is the truthful result, not a failure, and it is never a reason to refuse the delegation or to
-claim the stronger thing:
-
-```text
-Authority       BOUND
-Handoff         HANDOFF_READY
-Runtime proof   UNAVAILABLE
-Execution proof UNAVAILABLE
-
-routing         REQUIREMENT_ONLY   the tier is what the substrate must resolve, never proof of
-                                   which model the child ran
-fresh           REQUIRED | NOT_REQUIRED   a dispatch requirement, never an observation
-capability      unattested_claim   nothing about the child was observed, so nothing is ENFORCED
-```
-
-A delegation compile mints **no execution handle**, because a child this session cannot observe is
-never admitted for execution here: `charter_verify_execution` applies to the parent session only.
+Capability truth remains explicit: `ENFORCED`, `INSTRUCTED`, `UNSUPPORTED`, and `NOT_APPLICABLE` are compile-time target truths, never execution-success claims.
 
 ## Surfaces
 
-pi-charter ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported entry
-point) with a bundled **Pi extension**. From Pi, the supported surface is the two tools the extension
-registers — nothing handwritten, nothing temporary:
+pi-charter ships as a **compiled package** (`dist/` JavaScript plus declarations, one exported entry point) with a bundled **Pi extension**. From Pi, the supported surface is exactly one tool:
 
 ```text
-charter_compile           compile bounded governance for the active session, or bounded delegation
-                          authority for target=subagents; admits parent artifacts for execution
-charter_verify_execution  verify an OBSERVED run of this session against that admission, using that
-                          handle; Pi's tool-execution event is the execution observation
+charter_compile  compile bounded governance for the active session, or bounded delegation authority
+                 for target=subagents
 ```
 
-`charter_compile` accepts either the simple intent above or, for advanced use, a full canonical
-`task_contract` together with the exact `authority_evidence { source, doc, revision? }` its
-`authority.sources` reference binds to. The sealed v0.1.1 spelling of that evidence — an `authority`
-object beside `task_contract` — is still accepted as a compatibility alias. Neither tool accepts capability booleans, a model inventory, a
-trust boundary, a model pin, or a caller-chosen compiler identity: those are derived from the live
-session or refused. There is no CLI and no `/charter` command; the tools are the Pi-native interface.
+`charter_compile` accepts either the simple intent above or, for advanced use, a full canonical `task_contract` together with the exact `authority_evidence { source, doc, revision? }` its `authority.sources` reference binds to. The v0.1.1 spelling of that evidence — an `authority` object beside `task_contract` — remains accepted as a compatibility alias. The tool accepts no capability booleans, model inventory, trust boundary, model pin, or caller-chosen compiler identity: those are derived from the live session or refused. There is no CLI and no `/charter` command; `charter_compile` is the Pi-native interface.
 
-Two supported library ways to invoke core:
+Supported library entry points are deliberately small:
 
 ```text
-compileForTarget          the one blessed facade — use it from a host integration
-compileDelegation         bounded delegation authority for target=subagents (handoff only, no
-                          runtime attestation, no execution handle)
-compileViaPi / observeExecutionViaPi / verifyExecutionViaPi
-                          the library bridge — use it from TypeScript inside Pi; it derives the
-                          environment evidence itself and mediates the active parent session only
+compileForTarget          canonical bounded compile facade
+compileDelegation         bounded target=subagents handoff; never a child execution claim
+createAdapterIntegration  ordinary external-runtime integration seam
 ```
 
-Low-level functions (`resolveExecutionContract`, `bindExecutionTarget`,
-`compileBoundRoleEnvelope`, …) remain public for advanced and internal use. Do **not** compose them
-by hand when the facade covers the need, and never feed a target handoff into envelope compilation.
-Adapters integrating their own runtime use the supported `createAdapterIntegration` contract; they
-supply observations, and those observations are CANDIDATES from the ordinary package position — no
-attested capability, no attested model, no issued execution evidence. Only the host-authorized
-adapter context (the Pi bridge and the installed extension, which hold an in-process capability that
-is not on the package surface) has observations promoted into trusted evidence.
+Compiler phases such as resolution, target binding, envelope compilation, receipt construction, and
+the Pi bridge are implementation details rather than public composition APIs. Adapters integrating
+their own runtime use `createAdapterIntegration`; their observations remain candidates from the
+ordinary package position — no attested capability and no attested model. The installed Pi seam may
+hold host authorization that is intentionally unavailable on the package surface.
 
 ## When to use Charter
 
@@ -149,7 +115,6 @@ Use it when governance must be explicit and hard, i.e. non-trivial work such as:
 - bounded semantic/authority/contract adjudication
 - intentionally delegated parent/subagents execution
 - work requiring hard enforcement truth (tool ceiling, file scope, model selection)
-- work with bounded escalation/correction limits
 
 Do **not** force Charter ceremony onto:
 
@@ -228,12 +193,11 @@ assertion bound    ≠ assertion verified     only evidence that the exact bound
                                             passed moves a bound assertion to verified
 command declared   ≠ acceptance verified    declared gates are declarations; verifier evidence is
                                             reported separately, and never inferred from them
-ResolutionReceipt  ≠ ExecutionAttestation   a receipt proves what was COMPILED; a run is proven by
-                                            trusted execution evidence
+ResolutionReceipt  = compile evidence         a receipt proves what was COMPILED; Charter makes no
+                                            post-run conformance claim
 correct authority  requires accepted finding provenance — a bound authority source grounds a named
                    finding, it is never itself a finding
-execution          conformance requires the exact artifact link: the admission handle returned when
-                   governance was compiled, not artifacts supplied at verification time
+execution          remains substrate-owned after Charter compiles or emits a bounded handoff
 ```
 
 ## Fail-closed operator behavior
@@ -373,8 +337,8 @@ Charter core owns, and this skill must never restate as its own decision procedu
 
 ```text
 model fallback algorithm · monotonic narrowing · enforcement truth evaluation
-scope subset logic · authority binding · escalation counters · receipt hashing
-target capability validation · execution-attestation conformance
+scope subset logic · authority binding · receipt hashing
+target capability validation · bounded instruction compilation
 ```
 
 Use the pi-charter core result as truth. The skill may explain what a result means; it may not

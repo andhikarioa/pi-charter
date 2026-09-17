@@ -1,179 +1,67 @@
 import assert from 'node:assert/strict';
-import { existsSync, readFileSync } from 'node:fs';
 import { test } from 'node:test';
 
-import { createAttestationVerifier } from '../../core/attestation/attestation.ts';
 import { createAuthorityBinder } from '../../core/authority/binder.ts';
-import type { ExecutionContract } from '../../core/contracts/execution-contract.ts';
 import type { TaskContract } from '../../core/contracts/task-contract.ts';
-import { resolveExecutionContract, type ResolverEnv } from '../../core/resolver/resolve.ts';
-import { ASSERTION_BINDER, CORRECTION_BINDER, POSITIVE_CONTRACTS } from '../../core/validation/fixtures.ts';
-import type { CapabilityClaim } from '../../core/enforcement/target-binding.ts';
+import { bindExecutionTarget, type TargetBinding } from '../../core/enforcement/target-binding.ts';
+import { resolveExecutionContract } from '../../core/resolver/resolve.ts';
 import { bindParentTarget } from './parent-adapter.ts';
 
-const ENV: ResolverEnv = {
-  authorityBinder: createAuthorityBinder({ 'canonical-master': {}, 'reviewer-findings': {} }),
-  assertionBinder: ASSERTION_BINDER,
-  correctionBinder: CORRECTION_BINDER,
-  profile: {
-    workhorse: { preferred: 'gemini-3.8-flash', fallback: [] },
-    reviewer: { preferred: 'gpt-5.6-sol', fallback: [] },
-    reasoning: { preferred: 'gpt-5.6-sol', fallback: [] },
-  },
-  available: ['gemini-3.8-flash', 'gpt-5.6-sol'],
-};
+const MODEL = 'adapter-model';
 
-/** Canonical capability fixture (Phase 3 charter §3), supplied by the environment at runtime. */
-const PARENT_SNAPSHOT: CapabilityClaim = {
-  name: 'parent',
-  capabilities: {
-    model_selection: true,
-    fresh_session: false,
-    tool_ceiling: false,
-    file_scope_enforcement: false,
-    independent_review: false,
-  },
-};
+function task(target: 'parent' | 'subagents'): TaskContract {
+  return {
+    version: 'charter/v0.1',
+    task: { id: `adapter-${target}`, class: 'T1', risk: 'low' },
+    role: 'implement',
+    execution_target: target,
+    root: '/projects/adapter',
+    authority: { sources: ['spec'] },
+    scope: { files: ['src/feature.ts'] },
+    permissions: { code_write: true, research: false, external_write: false, release: false },
+    acceptance: { commands: ['npm test'] },
+    verification: { level: 'V1' },
+  };
+}
 
-/** The same axes, ATTESTED by an explicit execution adapter (T2). */
-const PARENT_ATTESTATION = {
-  source_kind: 'execution_adapter' as const,
-  source: 'pi-parent',
-  source_version: '0.1.0',
-  payload: { target: 'parent' as const, capabilities: PARENT_SNAPSHOT.capabilities },
-};
-
-const SUBAGENTS_ATTESTATION = {
-  source_kind: 'execution_adapter' as const,
-  source: 'pi-subagents',
-  source_version: '0.1.0',
-  payload: {
-    target: 'subagents' as const,
-    capabilities: {
-      model_selection: true,
-      fresh_session: true,
-      tool_ceiling: true,
-      file_scope_enforcement: false,
-      independent_review: true,
+function binding(target: 'parent' | 'subagents'): TargetBinding {
+  const resolved = resolveExecutionContract(task(target), {
+    authorityBinder: createAuthorityBinder({ spec: { revision: 1 } }),
+    profile: { workhorse: { preferred: MODEL, fallback: [] } },
+    available: [MODEL],
+  });
+  assert.equal(resolved.ok, true);
+  if (!resolved.ok) throw new Error('fixture failed to resolve');
+  const bound = bindExecutionTarget({
+    execution_contract: resolved.contract,
+    capability_claim: {
+      name: target,
+      capabilities: {
+        model_selection: false,
+        fresh_session: false,
+        tool_ceiling: false,
+        file_scope_enforcement: false,
+        independent_review: false,
+      },
     },
-  },
-};
-
-/**
- * The environment's explicit attestation boundary (W1_ATTESTATION_SELF_PROMOTION): it vouches for
- * exactly the attestations this environment issues. A submitted envelope, an admitted source kind,
- * and a realistic adapter name are not trust — this capability is, and Charter never decides it.
- */
-const ATTESTATION_VERIFIER = createAttestationVerifier([PARENT_ATTESTATION, SUBAGENTS_ATTESTATION]);
-
-function contractFor(name: string): ExecutionContract {
-  const fixture = POSITIVE_CONTRACTS.find((p) => p.name === name);
-  assert.ok(fixture, `missing positive fixture '${name}'`);
-  const result = resolveExecutionContract(structuredClone<TaskContract>(fixture.contract), ENV);
-  if (!result.ok) assert.fail(`expected resolution to succeed, got ${JSON.stringify(result.errors)}`);
-  return result.contract;
+  });
+  assert.equal(bound.ok, true);
+  if (!bound.ok) throw new Error('fixture failed to bind');
+  return bound.binding;
 }
 
-/** A resolved contract whose TaskContract declared hard enforcement requirements (the only channel). */
-function contractRequiring(name: string, requirements: TaskContract['requirements']): ExecutionContract {
-  const fixture = POSITIVE_CONTRACTS.find((p) => p.name === name);
-  assert.ok(fixture, `missing positive fixture '${name}'`);
-  const task: TaskContract = { ...structuredClone(fixture.contract), requirements };
-  const result = resolveExecutionContract(task, ENV);
-  if (!result.ok) assert.fail(`expected resolution to succeed, got ${JSON.stringify(result.errors)}`);
-  return result.contract;
-}
-
-test('parent adapter — binds a parent contract without any subagents runtime', () => {
-  const contract = contractFor('critical correction');
-  const result = bindParentTarget({ execution_contract: contract, capability_claim: PARENT_SNAPSHOT });
-  assert.equal(result.ok, true, JSON.stringify(result.ok ? [] : result.errors));
+test('parent adapter consumes one already-bound parent TargetBinding without rebinding', () => {
+  const canonical = binding('parent');
+  const result = bindParentTarget(canonical);
+  assert.equal(result.ok, true);
   if (!result.ok) return;
-  assert.equal(result.handoff.target, 'parent');
-  assert.deepEqual(Object.keys(result.handoff).sort(), [
-    'capability_evidence',
-    'enforcement',
-    'execution_contract',
-    'target',
-  ]);
-  // Low-level claim path: nothing is attested, so nothing is hard-enforced, whatever the claim says.
-  assert.equal(result.handoff.capability_evidence.class, 'unattested_claim');
-  assert.equal(result.handoff.enforcement.model_selection, 'UNSUPPORTED');
-  assert.equal(result.handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
-  // A handoff is a binding, not a session: it exposes no handle, no step, and no state.
-  assert.deepEqual(result.handoff.execution_contract, contract);
-  assert.notEqual(result.handoff.execution_contract, contract);
-
-  // The strong path: attested capability, so the parent's real model-selection primitive is ENFORCED.
-  const attested = bindParentTarget({
-    execution_contract: contract,
-    capability_attestation: PARENT_ATTESTATION,
-    capability_attestation_verifier: ATTESTATION_VERIFIER,
-  });
-  assert.equal(attested.ok, true, JSON.stringify(attested.ok ? [] : attested.errors));
-  if (!attested.ok) return;
-  assert.equal(attested.handoff.capability_evidence.class, 'attested');
-  assert.equal(attested.handoff.enforcement.model_selection, 'ENFORCED');
-  // Still no tool ceiling: this contract declares no tool policy, and the parent cannot enforce one.
-  assert.equal(attested.handoff.enforcement.allowed_tools, 'NOT_APPLICABLE');
+  assert.equal(result.handoff, canonical);
+  assert.deepEqual(result.handoff.enforcement, canonical.enforcement);
+  assert.deepEqual(result.handoff.capability_evidence, canonical.capability_evidence);
 });
 
-test('parent adapter — refuses a subagents contract instead of substituting the target', () => {
-  const contract = contractFor('subagents implement with independent review');
-  // Attested capability that truthfully describes the subagents target: the core binds it, and it is
-  // the adapter that must refuse rather than serve a target the contract did not select.
-  const result = bindParentTarget({
-    execution_contract: contract,
-    capability_attestation: SUBAGENTS_ATTESTATION,
-    capability_attestation_verifier: ATTESTATION_VERIFIER,
-  });
+test('parent adapter refuses a subagents binding instead of substituting targets', () => {
+  const result = bindParentTarget(binding('subagents'));
   assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['CONTRACT_CONTRADICTION']);
-  assert.deepEqual(result.errors.map((e) => e.path), ['execution_target']);
-});
-
-test('parent adapter — refuses what the parent target cannot enforce', () => {
-  // The hard requirement is carried by resolution onto the contract itself; the adapter receives
-  // it only inside the resolved contract and owns no requirements parameter of its own.
-  const contract = contractRequiring('critical correction', { enforcement: { allowed_tools: 'required' } });
-  assert.equal(contract.requirements?.enforcement?.allowed_tools, 'required');
-  const result = bindParentTarget({ execution_contract: contract, capability_claim: PARENT_SNAPSHOT });
-  assert.equal(result.ok, false);
-  if (result.ok) return;
-  assert.deepEqual([...new Set(result.errors.map((e) => e.code))], ['UNSUPPORTED_BY_EXECUTION_TARGET']);
-  // No adapter-level requirement channel exists: a smuggled one fails closed instead of binding.
-  const smuggled = bindParentTarget({
-    execution_contract: contract,
-    capability_claim: PARENT_SNAPSHOT,
-    requirements: { enforcement: { model_selection: 'required' } },
-  } as unknown as Parameters<typeof bindParentTarget>[0]);
-  assert.equal(smuggled.ok, false);
-  if (smuggled.ok) return;
-  assert.deepEqual([...new Set(smuggled.errors.map((e) => e.code))], ['INVALID_TASK_CONTRACT']);
-});
-
-test('parent adapter — depends on the Phase 3 core only, and no other adapter or runtime', () => {
-  // Static architectural guard: the parent target must work with zero subagents dependency.
-  const source = readFileSync(
-    new URL(
-      existsSync(new URL('./parent-adapter.ts', import.meta.url))
-        ? './parent-adapter.ts'
-        : './parent-adapter.js',
-      import.meta.url,
-    ),
-    'utf8',
-  );
-  const sources: string[] = [...source.matchAll(/from ["']([^"']+)["']/g)].flatMap((match) =>
-    match[1] === undefined ? [] : [match[1]],
-  );
-  assert.ok(sources.length > 0, 'the adapter must import the core binding it uses');
-  for (const path of sources) {
-    assert.equal(/subagents|intercom|pi-/.test(path), false, `the parent adapter must not depend on '${path}'`);
-    assert.equal(path.startsWith('../../core/'), true, `unexpected dependency '${path}'`);
-  }
-  // And no lifecycle, timer, clock, or randomness lives in the adapter itself.
-  for (const forbidden of ['async ', 'await ', 'Promise', 'setTimeout', 'setInterval', 'Date.now', 'Math.random', 'child_process']) {
-    assert.equal(source.includes(forbidden), false, `parent adapter must not contain '${forbidden}'`);
-  }
+  if (!result.ok) assert.equal(result.errors.some((error) => error.code === 'CONTRACT_CONTRADICTION'), true);
 });

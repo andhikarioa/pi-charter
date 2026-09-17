@@ -44,10 +44,15 @@ const ARTIFACT_EXTENSIONS = ['.js', '.d.ts'] as const;
 
 /**
  * Artifacts excluded from the shipped/runtime set. These are exactly the exclusions `package.json`
- * applies to `dist` in `files`: a test artifact is not part of the runtime package, so it neither
- * defines the runtime identity nor can a change to it invalidate a legitimate build.
+ * applies to `dist` in `files`: test artifacts and the validation fixture are not part of the runtime package, so they neither
+ * define the runtime identity nor can a change to it invalidate a legitimate build.
  */
-const EXCLUDED_ARTIFACT_SUFFIXES = ['.test.js', '.test.d.ts'] as const;
+const EXCLUDED_ARTIFACT_SUFFIXES = [
+  '.test.js',
+  '.test.d.ts',
+  'core/validation/fixtures.js',
+  'core/validation/fixtures.d.ts',
+] as const;
 
 /** The package root, resolved identically from `src/build/` and from `dist/build/`. */
 const PACKAGE_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');

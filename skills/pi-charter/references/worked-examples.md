@@ -19,15 +19,13 @@ scope: { files: [internal/example.go] }
 permissions: { code_write: true, research: false, external_write: false, release: false }
 acceptance: { commands: [go test ./...], review: { required: true, independence: none, executor: same_session } }
 verification: { level: V2 }
-limits: { correction_rounds: 1 }
 ```
 
 - **Expected result:** validated and resolved; parent target bound; role envelope compiled for
   `implement` with bounded scope, `code_write` effective, no hard-enforcement requirement, so no
   enforcement refusal is possible.
 - **Executor may:** edit only within declared scope, run the declared acceptance, report an outcome.
-- **Stops at:** the declared files, the declared acceptance, and one correction round. Nothing
-  invites a broader refactor; a same-session review must be reported as not independent.
+- **Stops at:** the declared files and declared acceptance. Nothing invites a broader refactor; a same-session review must be reported as not independent.
 
 ---
 
@@ -69,7 +67,6 @@ scope: { blockers: [blocker-a], files: [internal/example.go, internal/example_te
 permissions: { code_write: true, research: false, external_write: false, release: false }
 acceptance: { commands: [go test ./...], assertions: [blocker-a-eliminated], review: { required: true, independence: none, executor: same_session } }
 verification: { level: V3 }
-limits: { correction_rounds: 2, semantic_escalations: 1 }
 ```
 
 - **Expected result:** the contract validates and resolves with `blocker-a` carried as the named
@@ -96,16 +93,11 @@ scope: { sections: [authority-model] }
 permissions: { code_write: false, research: false, external_write: false, release: false }
 acceptance: { assertions: [contradiction-decided] }
 verification: { level: V3 }
-limits: { semantic_escalations: 1 }
 ```
 
-- **Expected result:** read-only envelope with bounded semantic-adjudication authority — no
-  architecture authority, no mutation. After SEMANTIC_AMBIGUITY inside the declared limit, the
-  admitted next action is `ADJUDICATE`; once the limit is reached, `HUMAN_DECISION_REQUIRED`.
-- **Executor may:** decide the one named contradiction and report
-  `ADJUDICATION_RESOLVED` / `ADJUDICATION_UNRESOLVED`.
-- **Stops at:** the named contradiction. De-escalation requires an explicitly supplied downstream
-  role — never the adjudicator itself; and this role never implements its own decision.
+- **Expected result:** read-only envelope with bounded semantic-adjudication authority — no architecture authority and no mutation.
+- **Executor may:** decide the one named contradiction and report the result to the operator.
+- **Stops at:** the named contradiction. Any follow-up implementation/correction is a new explicitly bounded Charter task; this role never implements its own decision.
 
 ---
 

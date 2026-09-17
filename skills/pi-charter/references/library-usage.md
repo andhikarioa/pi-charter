@@ -50,14 +50,12 @@ Non-negotiable composition rules the facade enforces for you:
 
 ## From Pi: prefer the bundled integration
 
-Pi loads the package's extension and exposes two tools. That is the Pi-native surface: no handwritten
+Pi loads the package's extension and exposes one tool. That is the Pi-native surface: no handwritten
 script, no environment strings, no trust handed to the caller.
 
 ```text
-charter_compile           compile bounded governance for the active session, or bounded delegation
-                          authority for target=subagents; for parent it admits the exact artifact set
-                          and returns the execution handle
-charter_verify_execution  verify an observed run of this session, using that handle
+charter_compile  compile bounded governance for the active session, or bounded delegation authority
+                 for target=subagents; Charter owns no post-execution lifecycle
 ```
 
 `charter_compile` takes either normal intent or a canonical contract:
@@ -85,7 +83,6 @@ with the runtime claim explicitly NOT made:
 Authority        BOUND                 the canonical Phase 2/3 compilation
 Handoff          HANDOFF_READY         bounded delegation parameters, ready to dispatch
 Runtime attested NO                    this process observed no child runtime
-Execution proof  UNAVAILABLE           no admission handle exists, so none is minted
 ```
 
 ```ts
@@ -114,53 +111,17 @@ Handoff facts to rely on:
   never proof of which model a child ran. Charter holds no channel that observes a child's model.
 - Capability evidence is an unattested claim with no observed axis, so no constraint is `ENFORCED` and
   the enforcement table is instruction-level truth.
-- It mints **no execution handle**. `observeExecution`/`verifyExecution` are not reachable from a
-  delegation handoff: a runtime this process cannot observe is never admitted for execution here, and
-  the parent's own tool executions are never reported as the child's run.
+- It makes **no child execution claim**. Dispatch and execution remain owned by the substrate.
 - A capability-gated requirement the target cannot be proven to satisfy — a fresh-session review, for
   instance — is refused by canonical Phase 3 with `UNSUPPORTED_BY_EXECUTION_TARGET`, never softened.
 
-If you are writing TypeScript inside the Pi process, the library bridge is the same integration:
+Inside the installed Pi extension, the Pi bridge is an internal seam rather than a package export. Operators use `charter_compile`; TypeScript consumers use `compileForTarget`, `compileDelegation`, or `createAdapterIntegration` according to their boundary. This prevents ordinary callers from composing host-trust internals by hand.
 
-```ts
-import { compileViaPi, observeExecutionViaPi, verifyExecutionViaPi } from 'pi-charter';
+Pi bridge facts that remain true:
 
-const compiled = compileViaPi({
-  task_contract: taskContract,
-  authority_binder: authorityBinder,
-  model_profile: profile,
-});
-if (!compiled.ok) throw new Error(JSON.stringify(compiled.errors));
-
-// later, once this session actually ran the work: report that execution observation, then verify.
-// The handle proves which artifact set was admitted; the observation proves it ran, and in which
-// session. Admission alone is not execution and does not verify.
-observeExecutionViaPi({ execution_handle: compiled.execution_handle });
-const verified = verifyExecutionViaPi({
-  execution_handle: compiled.execution_handle,   // required — artifacts alone are not execution evidence
-  resolution_receipt: compiled.compiled.resolution_receipt,
-  role_envelope: compiled.compiled.role_envelope,
-  execution_contract: compiled.compiled.execution_contract,
-});
-```
-
-Bridge facts to rely on:
-
-- It mediates the **active `parent` session only**. A `subagents` contract is refused, not answered
-  with evidence about a runtime the bridge cannot see.
-- An admitted artifact set nothing reported executing is **refused**, and a run observed in one
-  session does not verify as a run of another: execution evidence binds the observed session.
-- Capability booleans and model lists are **not accepted** from the caller; supplying them is an
-  error, not an override.
-- It claims no capability it cannot observe, so nothing reaches `ENFORCED` on the bridge path, and a
-  contract that requires hard enforcement refuses to compile there.
-- It attests no fresh session, tool ceiling, or verifier outcome. A contract requiring those gets a
-  truthful deviation (`FRESH_SESSION_NOT_EVIDENCED`, `TOOL_POLICY_NOT_EVIDENCED`,
-  `ACCEPTANCE_NOT_VERIFIED`), never a green result built on silence.
-- Compilation admits the exact artifact set and returns an opaque execution handle. Verification
-  without a handle is refused; verification with a handle for different artifacts is
-  `NON_CONFORMANT`. Same session, same model, different governance artifact is not a pass.
-- It spawns nothing, schedules nothing, persists nothing, and returns values.
+- It mediates the **active `parent` session only**. A `subagents` contract is refused rather than answered with evidence about a runtime the bridge cannot see.
+- Provider/model/session identity comes from the active Pi environment, not caller arguments.
+- It owns no execution handle, observation registry, or post-run verifier. After compilation, execution remains Pi's responsibility.
 
 ## Environment evidence: claim vs attestation
 
@@ -176,34 +137,9 @@ nothing. Trust is a capability the environment holds: without the exact boundary
 candidate, the candidate is recorded as the claim it is. With no attested capability, policy-bearing
 dimensions resolve to `INSTRUCTED`, and `model_selection` to `UNSUPPORTED`.
 
-## Execution evidence: receipt vs attestation
+## Compile evidence: receipt, not execution proof
 
-A `ResolutionReceipt` proves what was **compiled**. It says nothing about what ran. Execution
-evidence is separate:
-
-```ts
-import { verifyExecutionAttestation } from 'pi-charter';
-
-const verdict = verifyExecutionAttestation({
-  execution_attestation,
-  resolution_receipt,
-  role_envelope,
-  execution_contract,
-});
-```
-
-- Verdict is `EXECUTION_CONFORMANT` or `NON_CONFORMANT` with exact deviations. No score, no partial
-  pass, no lifecycle.
-- Acceptance is reported separately: `ACCEPTANCE_VERIFIED`, `ACCEPTANCE_NOT_VERIFIED`, or
-  `ACCEPTANCE_NOT_DECLARED`. Bound assertions stay `ASSERTION_BOUND` until evidence shows the exact
-  bound verifier ran and passed for that reference.
-- Only required dimensions are demanded: no tool policy → no tool evidence; no declared assertions →
-  no verifier outcomes; nothing marked `required` → no enforcement evidence.
-- Evidence must be **issued** by an execution-attestation boundary in the same process. A
-  caller-authored object with every field correct is `UNTRUSTED_EXECUTION_EVIDENCE`.
-- Conformance requires the **exact artifact link**. Evidence is issued from the admission the
-  compile minted, and the artifacts you present are checked against it: an artifact supplied only at
-  verification time is a claim about a run, never proof that this process admitted it.
+A `ResolutionReceipt` proves what Charter compiled. It says nothing about whether later work ran, passed tests, or respected instructions at runtime. Pi Charter intentionally exposes no post-execution attestation/verification API.
 
 ## Adapter integration — for a substrate that owns its runtime
 
@@ -231,10 +167,7 @@ const adapter = createAdapterIntegration({
 });
 
 const compiled = adapter.compile({ task_contract, authority_binder, model_profile });
-// … the substrate runs the admitted artifact set …
-// The runtime owner reports the execution it observed: admission alone is not execution.
-adapter.observeExecution({ execution_handle: compiled.execution_handle });
-const verified = adapter.verifyExecution({ execution_handle: compiled.execution_handle });
+// After compilation, execution remains owned by the substrate.
 ```
 
 **Observing a runtime is not owning it.** A callback you construct and a callback the installed
@@ -243,8 +176,8 @@ instead of the callbacks:
 
 | position | who holds it | what its observations become |
 | --- | --- | --- |
-| ordinary package caller | anyone with `createAdapterIntegration` | candidates: unattested capability evidence, an availability claim instead of a model inventory, and `NON_CONFORMANT` + `UNTRUSTED_EXECUTION_EVIDENCE` instead of issued execution evidence |
-| host-authorized adapter context | the runtime integration the package itself wires (the Pi bridge, the installed Pi extension) | trusted evidence: attested capability over the observed axes, attested model availability, issued execution evidence |
+| ordinary package caller | anyone with `createAdapterIntegration` | candidates: unattested capability evidence and an availability claim instead of a model inventory |
+| host-authorized adapter context | the runtime integration the package itself wires (the Pi bridge, the installed Pi extension) | trusted compile-time evidence: attested capability over the observed axes and attested model availability |
 
 The host position is a runtime CAPABILITY minted in-process, recognised by identity, and deliberately
 absent from the package surface (`createHostAuthorizedAdapterIntegration`, `HOST_ADAPTER_AUTHORITY`, and
@@ -270,70 +203,24 @@ Rules the contract enforces:
 - An unusable or malformed observation fails closed: the adapter's returned facts are the only facts
   considered, and on the ordinary path they are recorded as the candidates they are.
 
-## Low-level API — advanced and internal use only
+## Supported package boundary
 
-These remain public for adapters, integrations, and audits. Use them only when the facade genuinely
-cannot express what you need, and reproduce the canonical order exactly:
+The package does **not** expose individual compiler phases for manual composition. Resolution, target
+binding, role-envelope construction, target translation, and receipt construction are internal steps
+owned by `compileForTarget`. This keeps one canonical path instead of turning each intermediate
+artifact into a compatibility and trust boundary.
 
-```ts
-resolveExecutionContract → bindExecutionTarget → compileBoundRoleEnvelope
-→ renderRoleEnvelope → bindParentTarget / bindSubagentsTarget → createResolutionReceipt
-```
+Supported public seams:
 
-```ts
-import { bindExecutionTarget, compileBoundRoleEnvelope } from 'pi-charter';
+- `compileForTarget` — canonical compile facade.
+- `compileDelegation` — bounded delegation handoff for `target=subagents`; no child execution claim.
+- `createAdapterIntegration` — ordinary external-runtime integration; observations enter as candidates.
+- binder helpers and public contract/result types required to supply facade inputs or consume results.
 
-const binding = bindExecutionTarget({ execution_contract, capability_claim });
-const envelope = compileBoundRoleEnvelope(binding.binding); // must be binding.binding itself
-```
-
-Low-level cautions:
-
-- `bindParentTarget` / `bindSubagentsTarget` return a target **handoff** translated from bound truth.
-  They are not an envelope input, and their result is not a canonical binding.
-- `createResolutionReceipt` re-runs the pipeline from the same environment inputs and refuses a
-  claimed binding that does not equal what those inputs produce. Pass the exact artifacts you got.
-- Neither `createAttestationVerifier` nor `createExecutionAttestationIssuer` is on the package
-  surface. An ordinary consumer cannot mint trust at all, and neither can an ordinary consumer obtain
-  the host adapter authority: use `createAdapterIntegration` for a substrate integration (its
-  observations are candidates), and never deep-import internal modules.
-
-## Optional advanced surfaces
-
-### Next action decision
-
-```ts
-import { decideNextAction } from 'pi-charter';
-
-const decision = decideNextAction({
-  role_envelope,
-  outcome: 'MECHANICAL_FAILURE',
-  counters: { clean_retries_used: 0, correction_rounds_used: 0, semantic_escalations_used: 0 },
-});
-```
-
-Input is an explicit `RoleEnvelope` + outcome + counters → one decision. **It does not execute the
-action**, and Charter performs no retry itself.
-
-### Resolution receipt, low-level
-
-```ts
-import { createResolutionReceipt } from 'pi-charter';
-
-const receipt = createResolutionReceipt({
-  task_contract,
-  authority_binder,
-  assertion_binder,               // required when assertions are declared
-  model_profile,
-  available,                      // claim channel; attestation + verifier is the strong channel
-  capability_claim,
-  compiler_identity,              // the build identity of the running compiled package
-  target_binding,                 // the canonical binding from this same run
-});
-```
-
-A receipt is optional evidence: deterministic identities, no persistence, no cache, no workflow
-authority, and never run history.
+A successful facade compile already returns `compiled.resolution_receipt`. The receipt is a deterministic
+projection of the same resolved/bound truth; callers do not construct or re-run it separately. Trust
+minters, host authorization, the Pi bridge, and individual compiler phases are intentionally absent
+from the package surface. Do not deep-import them.
 
 ## Minimum end-to-end sample (facade only)
 
@@ -341,7 +228,6 @@ authority, and never run history.
 import {
   compileForTarget,
   createAuthorityBinder,
-  verifyExecutionAttestation,
   type ModelProfile,
   type TaskContract,
 } from 'pi-charter';
@@ -357,7 +243,6 @@ const taskContract: TaskContract = {
   permissions: { code_write: true, research: false, external_write: false, release: false },
   acceptance: { commands: ['go test ./...'] },
   verification: { level: 'V2' },
-  limits: { correction_rounds: 1 },
   non_goals: ['architecture redesign'],
 };
 

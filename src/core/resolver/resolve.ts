@@ -24,7 +24,7 @@ import type { EnvironmentEvidence, AttestationVerifier } from '../attestation/at
 import { isIssuedAttestationVerifier } from '../attestation/trusted-boundary.ts';
 import type { AuthorityBinder } from '../authority/binder.ts';
 import type { CharterError } from '../contracts/errors.ts';
-import { TERMINAL_POLICY, type ExecutionContract } from '../contracts/execution-contract.ts';
+import type { ExecutionContract } from '../contracts/execution-contract.ts';
 import {
   ROLE_REPOSITORY_WRITES,
   type Permissions,
@@ -36,7 +36,6 @@ import {
   type CorrectionAuthorityBinder,
   type ResolvedCorrectionTarget,
 } from '../correction/correction-authority.ts';
-import { ROLE_JURISDICTION_DEFAULTS, resolveJurisdiction } from '../jurisdiction/jurisdiction.ts';
 import { resolveEvidenceProvenance, type EvidenceProvenance } from '../provenance/evidence.ts';
 import { resolveModel, resolveModelAvailability, routeModelTier, type ModelProfile } from '../routing/model-routing.ts';
 import { validateTaskContract } from '../validation/validate.ts';
@@ -97,7 +96,7 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
 
   // Phase 1 validation runs inside resolution: an unvalidated contract is never resolved and the
   // resolver can never accept input that Phase 1 rejects (§12, §17).
-  const validated = validateTaskContract(input, { authorityBinder: env.authorityBinder });
+  const validated = validateTaskContract(input);
   if (!validated.ok) return { ok: false, errors: validated.errors };
   const task = validated.contract;
 
@@ -194,7 +193,6 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
       role: task.role,
       model: selection.model,
       model_availability: modelAvailability,
-      jurisdiction: resolveJurisdiction(task.role, permissions),
       // Authority binding was proven by validation in this same resolution step. The resolved set is
       // the declared set — never the binder's wider catalogue, never a guessed neighbour (§13, §16).
       authority: { bound_sources: [...task.authority.sources], provenance },
@@ -210,14 +208,12 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
       assertion_bindings: assertionBindings,
       correction_targets: correctionTargets,
       verification: { level: task.verification.level },
-      limits: structuredClone(task.limits ?? {}),
       non_goals: [...(task.non_goals ?? [])],
       // Provenance only: declared requirements cross into the resolved artifact verbatim, so the
       // binding step reads them from the contract itself rather than a separate caller channel.
       // Nothing here reinterprets, narrows, or broadens them, and a contract without requirements
       // resolves without requirements (§24, §16).
       ...(task.requirements ? { requirements: structuredClone(task.requirements) } : {}),
-      terminal_state: { ...TERMINAL_POLICY },
     },
   };
 }
@@ -227,7 +223,7 @@ export function resolveExecutionContract(input: unknown, env: ResolverEnv): Reso
  * frozen role-default table so the rule cannot drift from the jurisdiction it implies.
  */
 function requiresImplementationAuthority(role: Role): boolean {
-  return ROLE_JURISDICTION_DEFAULTS[role].implementation === 'bounded';
+  return role === 'implement' || role === 'correct';
 }
 
 /**

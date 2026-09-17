@@ -19,34 +19,18 @@
 import type { AssertionBinding } from '../acceptance/assertion-binding.ts';
 import type { EnvironmentEvidence } from '../attestation/attestation.ts';
 import type { ResolvedCorrectionTarget } from '../correction/correction-authority.ts';
-import type { Jurisdiction } from '../jurisdiction/jurisdiction.ts';
 import type { EvidenceProvenance } from '../provenance/evidence.ts';
 import type { ModelSelection } from '../routing/model-routing.ts';
 import type {
   Acceptance,
   ExecutionPolicy,
   ExecutionTargetName,
-  Limits,
   Permissions,
   Role,
   Scope,
   TaskRequirements,
   VerificationLevel,
 } from './task-contract.ts';
-
-/** Canonical terminal policy (spec §20, §29, §30). Policy only — Charter tracks no correction rounds. */
-export interface TerminalPolicy {
-  success: 'acceptance_verified';
-  ambiguity: 'escalate';
-  limit_exceeded: 'human_decision_required';
-}
-
-/** The single terminal policy v0.1 resolves to. Frozen; never shared as mutable state. */
-export const TERMINAL_POLICY: TerminalPolicy = Object.freeze({
-  success: 'acceptance_verified',
-  ambiguity: 'escalate',
-  limit_exceeded: 'human_decision_required',
-});
 
 export interface ExecutionContract {
   version: 'charter/v0.1';
@@ -56,7 +40,6 @@ export interface ExecutionContract {
   model: ModelSelection;
   /** How the resolved model was evidenced. An unattested claim is recorded as one (H2). */
   model_availability: EnvironmentEvidence;
-  jurisdiction: Jurisdiction;
   authority: {
     /** The declared authority references, each proven to bind uniquely (spec §13, §16). */
     bound_sources: string[];
@@ -79,7 +62,6 @@ export interface ExecutionContract {
   /** Admitted correction targets (role=correct): target id plus finding and acceptance provenance. */
   correction_targets: ResolvedCorrectionTarget[];
   verification: { level: VerificationLevel };
-  limits: Limits;
   non_goals: string[];
   /**
    * Hard enforcement requirements declared by the validated TaskContract, carried verbatim (spec
@@ -87,5 +69,4 @@ export interface ExecutionContract {
    * from here and accepts no second, caller-supplied requirements channel.
    */
   requirements?: TaskRequirements;
-  terminal_state: TerminalPolicy;
 }

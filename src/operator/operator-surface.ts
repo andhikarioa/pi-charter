@@ -1,36 +1,16 @@
 /**
- * Operator-facing results (v0.1.2 Wave 1 — CN3, CN4, CN5).
+ * Operator-facing Charter results.
  *
- * The dogfood finding was not that Charter lied; it was that Charter said true things in a shape the
- * operator could not act on:
- *
- *   - acceptance reported `ACCEPTANCE_NOT_DECLARED` while the contract plainly declared command gates,
- *     because that status is about ASSERTION acceptance and the output never said so;
- *   - a refusal named an internal code and left the operator to work out whether retrying was even
- *     meaningful, what the minimal remedy was, and whether the tool or the request was wrong;
- *   - a delegation result reported a model without saying whether that was a requirement or proof of
- *     what the child ran.
- *
- * This module renders those facts truthfully and no further. It is a PRESENTATION layer: it reads
- * already-established values, restates none of them, and can establish nothing. It never turns a
- * declaration into evidence, never upgrades `UNAVAILABLE` into a pass, and never hides a refusal
- * behind prose — the point is to make the operator's next action obvious, not to make the outcome
- * look better.
- *
- * Four truths stay four truths on this surface, because conflating any two of them is exactly what
- * made v0.1.1 unusable:
- *
- *   authority compilation   what was compiled and admitted
- *   handoff readiness       bounded delegation parameters exist
- *   runtime attestation     whether THIS process observed the runtime that runs the work
- *   execution proof         whether trusted execution evidence can be issued at all
+ * This presentation layer renders already-established compile truth and actionable refusals. It never
+ * turns declarations into evidence, upgrades `INSTRUCTED` into `ENFORCED`, or claims that post-compile
+ * execution occurred. Parent output says compilation is ready; delegated output says handoff is ready
+ * while child execution remains unobserved by Charter.
  */
 
 import type { AssertionBinding } from '../core/acceptance/assertion-binding.ts';
 import type { CompiledGovernance } from '../core/compile/compile-for-target.ts';
 import type { Acceptance } from '../core/contracts/task-contract.ts';
 import type { CharterError, CharterErrorCode } from '../core/contracts/errors.ts';
-import type { AcceptanceVerification } from '../core/execution/execution-attestation.ts';
 import type { DelegationCompileSuccess, DelegationHandoff } from '../delegation/compile-delegation.ts';
 
 // ── Declared versus attested acceptance (CN4) ───────────────────────────────
@@ -78,20 +58,18 @@ export function renderAcceptanceLines(truth: AcceptanceSurfaceTruth): string[] {
 
 // ── Compile results (CN3) ───────────────────────────────────────────────────
 
-/** What a parent compile established: an admitted artifact set for THIS session. */
+/** What a parent compile established for this session. */
 export interface ParentCompileSurface {
   /** The compiled artifacts: the resolved contract is the truth every line below is read from. */
   compiled: CompiledGovernance;
-  /** The admission handle: the only thing that makes this artifact set eligible for verification. */
-  execution_handle: string;
 }
 
-/** Render a parent compile. Execution proof is still pending: admission is not execution. */
+/** Render a parent compile without making any post-execution claim. */
 export function renderParentCompile(surface: ParentCompileSurface): string {
   const { execution_contract } = surface.compiled;
-  const acceptance = describeAcceptance(execution_contract.acceptance, surface.compiled.role_envelope.assertion_bindings);
+  const acceptance = describeAcceptance(execution_contract.acceptance, execution_contract.assertion_bindings);
   return [
-    'CHARTER',
+    'ALLOWED',
     '',
     `Role          ${execution_contract.role}`,
     `Target        ${execution_contract.execution_target}`,
@@ -99,23 +77,21 @@ export function renderParentCompile(surface: ParentCompileSurface): string {
     `Scope         ${renderScopeEntries(execution_contract.scope.directories ?? [], execution_contract.scope.files ?? [])}`,
     '',
     'Authority     BOUND',
-    'Admission     ADMITTED_FOR_EXECUTION',
+    `Enforcement   ${renderEnforcement(surface.compiled.target_binding.enforcement)}`,
     `Acceptance    ${renderAcceptanceInline(acceptance)}`,
     '',
-    `execution_handle: ${surface.execution_handle}`,
-    'Run the admitted work in this session, then call charter_verify_execution with that handle.',
-    'Until this session actually runs work under the admission, verification is refused: admission is not execution.',
+    'Charter compiled bounded governance for this task. Execution remains owned by Pi.',
   ].join('\n');
 }
 
 /** Render a delegation compile: bounded authority and a ready handoff, with no runtime claim. */
 export function renderDelegationCompile(result: DelegationCompileSuccess): string {
   const { handoff, truth, compiled } = result;
-  const acceptance = describeAcceptance(compiled.execution_contract.acceptance, compiled.role_envelope.assertion_bindings);
+  const acceptance = describeAcceptance(compiled.execution_contract.acceptance, compiled.execution_contract.assertion_bindings);
   const document = handoff.authority.bound_sources.length > 0 ? handoff.authority.bound_sources.join(', ') : 'NONE';
   const digest = handoff.authority.provenance[0]?.content_digest;
   return [
-    'CHARTER',
+    'ALLOWED',
     '',
     `Role          ${handoff.role}`,
     `Target        ${handoff.target}`,
@@ -124,44 +100,17 @@ export function renderDelegationCompile(result: DelegationCompileSuccess): strin
     `Fresh         ${freshLabel(handoff)}`,
     '',
     `Authority     ${truth.authority}`,
+    `Enforcement   ${renderEnforcement(compiled.target_binding.enforcement)}`,
     `Handoff       READY`,
     '',
-    'Runtime proof UNAVAILABLE',
-    'Execution proof UNAVAILABLE',
+    'Runtime execution is not observed or verified by Charter.',
     '',
     `Routing tier  ${handoff.routing.tier} (${handoff.routing.truth})`,
     `Authority doc ${document}${digest ? ` (sha256:${digest.slice(0, 12)})` : ''}`,
     `Acceptance    ${renderAcceptanceInline(acceptance)}`,
     '',
-    'Delegation parameters are ready. This process observed no child runtime, so it holds no execution handle',
-    'for the child: charter_verify_execution applies to the parent session only, and invoking it here is refused.',
-    'Calling it with a delegation handoff is refused, and no verification can be manufactured here.',
+    'Delegation parameters are ready. Charter makes no claim about child execution after handoff.',
   ].join('\n');
-}
-
-// ── Verification results (CN4) ──────────────────────────────────────────────
-
-/** Render a verification verdict, with the acceptance status explained rather than mistaken. */
-export function renderVerification(input: {
-  verdict: string;
-  acceptance: AcceptanceVerification;
-  deviations: readonly { code: string; path: string; detail: string }[];
-}): string {
-  const lines = [`Charter execution verdict: ${input.verdict}`, `acceptance: ${input.acceptance.status}`];
-  if (input.acceptance.status === 'ACCEPTANCE_NOT_DECLARED') {
-    lines.push(
-      'acceptance note: this status is about MACHINE-ATTESTED acceptance only — no verifier-bound',
-      'assertion is declared, so nothing about acceptance is established either way. Declared command',
-      'gates are declarations the substrate runs; they are not verifier evidence and never a pass.',
-    );
-  }
-  for (const unverified of input.acceptance.unverified) {
-    lines.push(`  not verified: ${unverified.reference} (${unverified.verifier}): ${unverified.reason}`);
-  }
-  for (const deviation of input.deviations) {
-    lines.push(`${deviation.code} @ ${deviation.path}: ${deviation.detail}`);
-  }
-  return lines.join('\n');
 }
 
 // ── Refusals (CN5) ──────────────────────────────────────────────────────────
@@ -246,6 +195,17 @@ function renderAcceptanceInline(truth: AcceptanceSurfaceTruth): string {
       ? `verifier evidence ASSERTION_BOUND, NOT VERIFIED (${truth.verifier_evidence.assertions})`
       : 'verifier evidence UNAVAILABLE';
   return `${commands}; ${evidence}`;
+}
+
+
+function renderEnforcement(truth: CompiledGovernance['target_binding']['enforcement']): string {
+  const groups = new Map<string, string[]>();
+  for (const [constraint, status] of Object.entries(truth)) {
+    const current = groups.get(status) ?? [];
+    current.push(constraint);
+    groups.set(status, current);
+  }
+  return [...groups.entries()].map(([status, constraints]) => `${status}: ${constraints.join(', ')}`).join('; ');
 }
 
 function renderScopeEntries(directories: readonly string[], files: readonly string[]): string {

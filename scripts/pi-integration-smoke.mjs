@@ -1,25 +1,13 @@
 /**
- * F3/F1 Pi integration smoke — the extension is discovered by Pi itself, and its tools work.
+ * Pi integration smoke — Pi discovers Charter's single compile tool and exercises it end to end.
  *
- * This is not a handwritten temporary script composing Charter by hand. It loads
- * `extensions/pi-charter.ts` through Pi's OWN resource loader (`DefaultResourceLoader`, the same
- * jiti-based loader Pi uses for installed packages), takes the tool definitions Pi registered, and
- * calls them with a live-shaped Extension context. That exercises the discoverable surface end to
- * end: manifest → Pi loader → registered tool → compiled package → adapter integration → admissions.
- *
- *   P1  Pi discovers the extension and registers both operations
- *   P2  charter_compile compiles a tiny parent contract through the real context observation
- *   P3a verifying an admitted artifact set that never executed is REFUSED (F1)
- *   P3b Pi's own tool-execution event is the execution observation, and then it verifies
- *   P3c a run observed in one session does not verify as a run of another session
- *   P5  a handle this process never minted is refused
- *   P6  the trusted model evidence is the provider/model the context actually reported
- *   P7  no capability the extension cannot observe is attested
- *   P10 the extension owns no scheduling, session lifecycle, or persistence
- *   P11 the canonical delegation flow (v0.1.2 CN6): ONE charter_compile from normal intent produces
- *       HANDOFF_READY with weaker truth — no source archaeology, no handle, no child claim
- *   P12 the released v0.1.1 advanced invocation (task_contract + an authority evidence object) still
- *       compiles: the extension translates it before the strict schema validates (F2)
+ * The extension is loaded through Pi's own resource loader. The smoke verifies:
+ *   P1  exactly one operation is registered: charter_compile
+ *   P2  parent compilation uses the live Pi provider/model/session observation
+ *   P3  compile returns no post-execution handle and claims no unobserved ENFORCED capability
+ *   P4  the released v0.1.1 advanced authority-evidence spelling remains accepted
+ *   P5  delegation compiles one bounded HANDOFF_READY result without a child execution claim
+ *   P6  the Pi-facing extension owns no scheduler, child lifecycle, persistence, or execution verifier
  *
  * Usage: node scripts/pi-integration-smoke.mjs
  */
@@ -33,7 +21,7 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const EXTENSION_PATH = resolve(ROOT, 'extensions', 'pi-charter.ts');
 const PI_PACKAGE_NAME = '@earendil-works/pi-coding-agent';
 
-const TOOL_NAMES = ['charter_compile', 'charter_verify_execution'];
+const TOOL_NAMES = ['charter_compile'];
 
 function fail(message) {
   console.error(`FAIL: ${message}`);
@@ -131,14 +119,14 @@ const taskContract = {
 const executeIn = (name, params, ctx) => tools.get(name).definition.execute(`smoke-${name}`, params, undefined, undefined, ctx);
 const execute = (name, params) => executeIn(name, params, context);
 
-// ── P2/P3/P6/P7 — compile through the Pi-registered tool ───────────────────
+// ── P2/P3 — compile through the Pi-registered tool ─────────────────────────
 
 const compiled = await execute('charter_compile', {
   task_contract: taskContract,
   authority_evidence: { source: 'smoke-spec', doc: 'SMOKE-SPEC.md', revision: '1' },
 });
 assert(compiled.details.ok === true, `charter_compile refused: ${compiled.content[0].text}`);
-assert(typeof compiled.details.execution_handle === 'string' && compiled.details.execution_handle.length >= 32, 'compile must return the admission handle');
+assert(compiled.details.execution_handle === undefined, 'parent compile must return no post-execution handle');
 assert(compiled.details.model_availability_evidence === 'attested', 'the observed model must become attested evidence');
 assert(compiled.details.resolved_model === OBSERVED.model, 'the resolved model must be the model the context actually reported');
 assert(compiled.details.capability_evidence === 'unattested_claim', 'an unobserved capability must stay an unattested claim');
@@ -146,49 +134,9 @@ assert(
   Object.values(compiled.details.enforcement_truth).every((truth) => truth !== 'ENFORCED'),
   'the integration must not attest any capability it cannot observe',
 );
-console.log(`pi integration smoke: compiled via Pi tool; model evidence = ${compiled.details.resolved_model}`);
+console.log(`pi integration smoke: parent compiled via Pi tool; model evidence = ${compiled.details.resolved_model}`);
 
-// ── P3a — admission is not execution (F1) ──────────────────────────────────
-
-const premature = await execute('charter_verify_execution', { execution_handle: compiled.details.execution_handle });
-assert(premature.details.ok !== true, 'verifying an admitted artifact set nothing reported executing must be refused');
-assert(premature.content[0].text.includes('observed no execution'), `the refusal must name the missing execution observation, got: ${premature.content[0].text}`);
-console.log('pi integration smoke: verification before any observed execution refused');
-
-// ── P3b — Pi's tool-execution event is the substrate observation (F1) ──────
-
-const startHandlers = extension.handlers.get('tool_execution_start') ?? [];
-assert(startHandlers.length === 1, 'the extension must observe tool execution in the session');
-await startHandlers[0]({ type: 'tool_execution_start', toolCallId: 'smoke-work-1', toolName: 'bash', args: { command: 'npm test' } }, context);
-
-const verified = await execute('charter_verify_execution', { execution_handle: compiled.details.execution_handle });
-assert(verified.details.ok === true, `charter_verify_execution refused: ${verified.content[0].text}`);
-assert(verified.details.verdict === 'EXECUTION_CONFORMANT', `expected EXECUTION_CONFORMANT, got ${verified.details.verdict}`);
-console.log('pi integration smoke: observed execution verified EXECUTION_CONFORMANT');
-
-// ── P3c — a run observed in one session is not a run of another ───────────
-
-const otherSession = {
-  model: { provider: OBSERVED.provider, id: OBSERVED.model },
-  sessionManager: { getSessionId: () => 'smoke-session-2' },
-  cwd: ROOT,
-};
-const mismatched = await executeIn('charter_verify_execution', { execution_handle: compiled.details.execution_handle }, otherSession);
-assert(mismatched.details.ok !== true, 'execution evidence binds the session the run was observed in');
-assert(mismatched.content[0].text.includes(OBSERVED.session), `the refusal must name the observed session, got: ${mismatched.content[0].text}`);
-console.log('pi integration smoke: session-bound execution evidence refused under another session');
-
-// ── P5 — an unbound artifact / foreign handle is refused ───────────────────
-
-const forged = await execute('charter_verify_execution', { execution_handle: 'f'.repeat(48) });
-assert(forged.details.ok !== true, 'a handle this process never minted must not verify');
-assert(forged.content[0].text.includes('refused'), 'the refusal must be explicit');
-
-const noHandle = await execute('charter_verify_execution', {});
-assert(noHandle.details.ok !== true, 'verification without a handle must be refused');
-console.log('pi integration smoke: unbound handles refused');
-
-// ── P12 — the released v0.1.1 advanced invocation is preserved (F2) ───────
+// ── P4 — the released v0.1.1 advanced invocation is preserved (F2) ────────
 
 const compileDefinition = tools.get('charter_compile').definition;
 assert(
@@ -225,13 +173,10 @@ const legacyContext = {
 };
 const legacy = await executeIn('charter_compile', preparedArgs, legacyContext);
 assert(legacy.details.ok === true, `the v0.1.1 advanced invocation must still compile: ${legacy.content[0].text}`);
-assert(
-  typeof legacy.details.execution_handle === 'string' && legacy.details.execution_handle.length >= 32,
-  'the legacy invocation must admit the parent artifact set exactly as the sealed release did',
-);
+assert(legacy.details.execution_handle === undefined, 'legacy advanced compile must also own no post-execution lifecycle');
 console.log('pi integration smoke: released v0.1.1 advanced invocation preserved (F2)');
 
-// ── P11 — the canonical delegation flow (v0.1.2 CN6) ──────────────────────
+// ── P5 — canonical delegation flow ───────────────────────────────────────
 
 /**
  * The dogfood intent, stated the way a normal operator states it and nothing more: no canonical
@@ -304,7 +249,7 @@ if (!existsSync(taskletPlan)) {
   );
 
   const panel = delegation.content[0].text;
-  for (const expected of ['Authority     BOUND', 'Handoff       READY', 'Runtime proof UNAVAILABLE', 'Fresh         required']) {
+  for (const expected of ['Authority     BOUND', 'Handoff       READY', 'Runtime execution is not observed or verified by Charter.', 'Fresh         required']) {
     assert(panel.includes(expected), `the operator panel must state '${expected}', got:\n${panel}`);
   }
   assert(!panel.includes('EXECUTION_CONFORMANT'), 'a delegation result must never claim execution conformance');
@@ -316,7 +261,7 @@ if (!existsSync(taskletPlan)) {
   );
 }
 
-// ── P10 — the Pi-facing extension owns no lifecycle and persists nothing ───
+// ── P6 — the Pi-facing extension owns no lifecycle and persists nothing ───
 
 const extensionSource = readFileSync(EXTENSION_PATH, 'utf8');
 for (const forbidden of ['child_process', 'spawn(', 'spawnSync', 'setTimeout', 'setInterval', 'writeFileSync', 'createWriteStream', 'Date.now', 'Math.random', 'process.exit', 'localStorage', 'indexedDB']) {
@@ -324,4 +269,4 @@ for (const forbidden of ['child_process', 'spawn(', 'spawnSync', 'setTimeout', '
 }
 
 rmSync(agentDir, { recursive: true, force: true });
-console.log('F3/F1 Pi integration smoke: PASS');
+console.log('Pi integration smoke: PASS');

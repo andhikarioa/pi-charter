@@ -1,41 +1,12 @@
 /**
- * Pi-native Charter integration (v0.1.2 Wave 1 — CN0–CN5).
+ * Pi-native Charter integration.
  *
- * This is the discoverable Pi surface: `package.json` declares `pi.extensions: ["./extensions"]`, so
- * Pi loads this module, and the module registers exactly two tools:
+ * Pi loads this module and receives exactly one tool: `charter_compile`. The tool observes the active
+ * provider/model/session from Pi itself, compiles bounded governance for `parent`, or emits a bounded
+ * `HANDOFF_READY` delegation for `subagents`. It accepts no caller-authored capability truth.
  *
- *   charter_compile           compile bounded governance for this session, or bounded delegation
- *                             authority for a subagents target, and admit the parent artifact set
- *   charter_verify_execution  verify what this session ran against the admitted artifact set
- *
- * v0.1.2 separates two questions this surface used to conflate:
- *
- *   A.  Can Charter compile bounded authority for this target?    → YES, for parent and subagents
- *   B.  Can Charter attest the target runtime?                    → ONLY for the session it observes
- *
- * For `execution_target=subagents` the tool compiles the authority, returns a bounded handoff, and
- * says plainly that it observed no child runtime: no capability is attested, no model is claimed for
- * the child, no execution handle is minted (a handle here would let this session's own tool calls be
- * verified as the child's run), and `charter_verify_execution` therefore has nothing to verify. The
- * weaker truth is the product; the impossibility of the stronger claim is not a failure.
- *
- * Two other properties remain exactly as v0.1.1 established them:
- *
- *   It observes the REAL runtime. Provider, model, and session identity come from the live Extension
- *   context (`ctx.model`, `ctx.sessionManager`), never from environment strings or tool arguments. The
- *   tool parameters carry normal operator intent (or an advanced canonical contract) — never
- *   environment evidence.
- *
- *   It hands out no trust. The parent path calls the supported adapter contract from the
- *   HOST-AUTHORIZED position, which promotes the observed facts into trusted evidence; the LLM-facing
- *   arguments have no capability booleans, no model inventory, no trust boundary, and no way to mint
- *   attestations. Execution verification requires the opaque handle the compile admitted AND an
- *   observed execution of it: passing artifacts at verification time cannot substitute, and neither
- *   can calling verify immediately after compile.
- *
- * Normal operation is tool-first and archaeology-free: parse intent, call `charter_compile` once,
- * consume the handoff or the refusal, continue. The extension reads exactly one file the operator
- * names — the authority document of a simple request — and never Charter's own sources.
+ * Charter stops after compilation/handoff. It owns no execution handle, post-run verifier, scheduler,
+ * child lifecycle, retry loop, or persistence.
  */
 
 import { readFileSync } from 'node:fs';
@@ -48,7 +19,6 @@ import {
   renderDelegationCompile,
   renderParentCompile,
   renderRefusal,
-  renderVerification,
   type NormalizedOperatorRequest,
 } from '../dist/index.js';
 // The host seam: this extension is the runtime integration the package ships and Pi loads, so it — and
@@ -86,17 +56,8 @@ interface PiExtensionApi {
       ctx: PiExtensionContext,
     ): Promise<{ content: { type: 'text'; text: string }[]; details: Record<string, unknown> }>;
   }): void;
-  /**
-   * Pi's event subscription. This extension uses exactly one event: the moment a tool actually
-   * executes in the session, which is the substrate's own observation that work ran.
-   */
-  on?(event: 'tool_execution_start', handler: (event: ToolExecutionStartEvent, ctx: PiExtensionContext) => void): void;
 }
 
-/** The only part of a Pi tool-execution event this extension reads. */
-interface ToolExecutionStartEvent {
-  toolName?: unknown;
-}
 
 /** The live facts this extension can observe about the session it runs in. */
 interface PiExtensionContext {
@@ -122,47 +83,7 @@ interface ObservationRefusal {
   reason: string;
 }
 
-const TOOL_NAMES = ['charter_compile', 'charter_verify_execution'] as const;
-
-/**
- * Handles this extension admitted, by the session that admitted them, so a tool executing in that
- * session can be reported as the substrate's execution observation. Bounded FIFO, process-local: this
- * is an observation window, not a run history, and it holds no artifacts.
- *
- * Only a parent compile ever enters this map. A delegation compile admits nothing, so it has no handle
- * and no entry — this session's tool executions are this session's work, never the child's.
- */
-const PENDING_EXECUTION = new Map<string, string>();
-const MAX_PENDING_EXECUTION = 16;
-
-function rememberPendingExecution(sessionIdentity: string, handle: string): void {
-  PENDING_EXECUTION.delete(sessionIdentity);
-  PENDING_EXECUTION.set(sessionIdentity, handle);
-  while (PENDING_EXECUTION.size > MAX_PENDING_EXECUTION) {
-    const oldest = PENDING_EXECUTION.keys().next().value;
-    if (oldest === undefined) break;
-    PENDING_EXECUTION.delete(oldest);
-  }
-}
-
-/**
- * The substrate's execution observation (F1). Pi reports that a tool is executing in this session;
- * a tool that is not one of this extension's own operations is work running, and that is reported
- * against the handle admitted for this session. Compiling admits an artifact set and verifying
- * inspects one, so neither is execution: without this observation, verification refuses.
- */
-function observeToolExecution(event: ToolExecutionStartEvent, ctx: PiExtensionContext | undefined): void {
-  const toolName = typeof event?.toolName === 'string' ? event.toolName : undefined;
-  if (toolName === undefined || (TOOL_NAMES as readonly string[]).includes(toolName)) return;
-  const observed = observeSession(ctx);
-  if (!observed.ok) return;
-  const session = observed.observation.session_identity;
-  const handle = PENDING_EXECUTION.get(session);
-  if (handle === undefined) return;
-  const integration = integrationFor(observed);
-  if (integration === undefined) return;
-  if (integration.observeExecution({ execution_handle: handle }).ok) PENDING_EXECUTION.delete(session);
-}
+const TOOL_NAME = 'charter_compile' as const;
 
 /** The adapter identity every attestation this integration causes will carry. */
 const ADAPTER_NAME = 'pi-charter';
@@ -263,15 +184,15 @@ function modelProfileFor(observed: ObservedSession): Record<string, { preferred:
 }
 
 const compileTool: Parameters<PiExtensionApi['registerTool']>[0] = {
-  name: TOOL_NAMES[0],
+  name: TOOL_NAME,
   label: 'Charter Compile',
   description:
-    'Compile bounded work into Charter governance. For normal use, state the intent directly (task, role, target, authority, scope, fresh, gates) — do not hand-author a contract. For target=subagents this returns a bounded delegation handoff (HANDOFF_READY) and states that no child runtime was observed; for target=parent it admits the artifact set and returns the execution handle that charter_verify_execution requires. An advanced canonical contract may be passed as task_contract + authority_evidence instead; the released v0.1.1 spelling (task_contract + an authority evidence object) is still accepted.',
+    'Compile bounded work into Charter governance. For normal use, state the intent directly (task, role, target, authority, scope, fresh, gates) — do not hand-author a contract. For target=subagents this returns a bounded delegation handoff (HANDOFF_READY) without claiming child execution; for target=parent it returns the bounded compile result for this session. Charter does not own or verify post-execution lifecycle. An advanced canonical contract may be passed as task_contract + authority_evidence instead; the released v0.1.1 spelling (task_contract + an authority evidence object) is still accepted.',
   promptSnippet: 'Compile bounded work into Charter governance immediately, from the stated intent',
   promptGuidelines: [
     'Use charter_compile as the first step for non-trivial bounded work: pass the intent fields directly (task, role, target, authority, scope, fresh, gates). Do not read Charter sources, dist/declarations, or Pi config to construct a request, and do not hand-author TaskContract JSON for normal work.',
-    'Read the result as four separate truths: Authority BOUND, Handoff READY, Runtime proof, Execution proof. A subagents compile never proves child execution; charter_verify_execution applies to the parent session only.',
-    'For target=parent keep the returned execution_handle and pass it to charter_verify_execution once this session has run the work; verifying before any tool executed is refused.',
+    'Read the result as compile-time governance truth only: authority/scope/model/target capability are resolved without claiming that later execution occurred.',
+    'For target=subagents, HANDOFF_READY means bounded delegation parameters exist; it never proves child execution. For target=parent, execution remains owned by Pi after compilation.',
   ],
   parameters: {
     type: 'object',
@@ -378,10 +299,9 @@ const compileTool: Parameters<PiExtensionApi['registerTool']>[0] = {
 /**
  * Compile the normalized request on the path its target selects.
  *
- * The parent path is unchanged from v0.1.1: the host-authorized integration observes this session and
- * admits the artifact set, returning the execution handle. The delegation path compiles bounded
- * authority only — it observes no runtime, mints no handle, and reports the weaker truth rather than
- * withholding a compilable delegation.
+ * The parent path compiles bounded governance from the host-observed session. The delegation path
+ * compiles bounded authority for a child handoff without claiming child execution. Neither path owns
+ * post-execution lifecycle or mints an execution handle.
  */
 async function compileRequest(
   request: NormalizedOperatorRequest,
@@ -415,8 +335,7 @@ async function compileRequest(
         execution_contract_identity: delegation.compiled.resolution_receipt.execution_contract_identity,
         compiler_identity: delegation.compiled.resolution_receipt.compiler_identity,
         enforcement_truth: delegation.compiled.resolution_receipt.enforcement_truth,
-        // Deliberately absent: execution_handle. A child this process cannot observe is never admitted
-        // for execution here, so no verification can be manufactured from this handoff.
+        // Deliberately no post-execution handle: Charter stops at bounded compilation/handoff.
       },
     };
   }
@@ -436,27 +355,22 @@ async function compileRequest(
   }
 
   const receipt = compiled.compiled.resolution_receipt;
-  rememberPendingExecution(observed.observation.session_identity, compiled.execution_handle);
   return {
     content: [
       {
         type: 'text',
-        text: renderParentCompile({
-          compiled: compiled.compiled,
-          execution_handle: compiled.execution_handle,
-        }),
+        text: renderParentCompile({ compiled: compiled.compiled }),
       },
     ],
     details: {
       ok: true,
       request_kind: request.request_kind,
-      status: 'ADMITTED_FOR_EXECUTION',
+      status: 'COMPILED',
       execution_target: 'parent',
-      execution_handle: compiled.execution_handle,
       receipt_identity: receipt.receipt_identity,
       execution_contract_identity: receipt.execution_contract_identity,
       compiler_identity: receipt.compiler_identity,
-      resolved_model: receipt.resolved_model.resolved,
+      resolved_model: receipt.model,
       model_availability_evidence: receipt.model_availability_evidence.class,
       capability_evidence: receipt.capability_evidence.class,
       enforcement_truth: receipt.enforcement_truth,
@@ -465,70 +379,7 @@ async function compileRequest(
   };
 }
 
-const verifyTool: Parameters<PiExtensionApi['registerTool']>[0] = {
-  name: TOOL_NAMES[1],
-  label: 'Charter Verify Execution',
-  description:
-    'Verify a run of the active Pi session against the exact governance artifact set that charter_compile admitted for it, using the execution handle it returned. Refused when the session never executed work under that admission, and refused for a delegation handoff — that compiles authority for a child this process does not observe, so there is nothing here to verify.',
-  promptSnippet: 'Verify this session actually ran the admitted Charter governance',
-  promptGuidelines: [
-    'Use charter_verify_execution only with an execution_handle returned by a target=parent charter_compile in this session; artifacts alone are not execution evidence and are refused.',
-    'A subagents delegation compile returns no execution handle: child execution is not attested by this session, so do not attempt to verify it.',
-  ],
-  parameters: {
-    type: 'object',
-    properties: {
-      execution_handle: {
-        type: 'string',
-        description: 'The execution handle returned by a target=parent charter_compile for the artifact set being verified.',
-      },
-    },
-    required: ['execution_handle'],
-    additionalProperties: false,
-  },
-
-  async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-    const observed = observeSession(ctx);
-    if (!observed.ok) return text(`Charter verification refused: ${observed.reason}`);
-    const integration = integrationFor(observed);
-    if (integration === undefined) return text('Charter verification refused: this integration cannot read its own package identity');
-
-    const handle = params.execution_handle;
-    if (typeof handle !== 'string' || handle.trim().length === 0) {
-      return text('Charter verification refused: execution_handle is required');
-    }
-
-    const result = integration.verifyExecution({ execution_handle: handle.trim() });
-    if (!result.ok) return text(`Charter verification refused: ${result.reason}`);
-
-    const verification = result.verification;
-    return {
-      content: [
-        {
-          type: 'text',
-          text: renderVerification({
-            verdict: verification.verdict,
-            acceptance: verification.acceptance,
-            deviations: verification.deviations,
-          }),
-        },
-      ],
-      details: {
-        ok: true,
-        verdict: verification.verdict,
-        deviations: verification.deviations,
-        acceptance: verification.acceptance,
-        substrate: verification.substrate,
-      },
-    };
-  },
-};
-
-/** Register the two operations, and Pi's execution event as the substrate observation (F1). */
+/** Register the single compile operation. Charter owns no post-execution lifecycle. */
 export default function piCharterIntegration(pi: PiExtensionApi): void {
   pi.registerTool(compileTool);
-  pi.registerTool(verifyTool);
-  // Fail-closed if this Pi build cannot report tool execution: no observation is recorded, so
-  // verification refuses instead of inferring execution from something that was never observed.
-  if (typeof pi.on === 'function') pi.on('tool_execution_start', observeToolExecution);
 }
